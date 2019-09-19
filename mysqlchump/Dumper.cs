@@ -20,7 +20,7 @@ namespace mysqlchump
 
 		public async Task WriteTableSchemaAsync(string table, Stream outputStream)
 		{
-			using (var writer = new StreamWriter(outputStream, Encoding.UTF8, 4096, true))
+			using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), 4096, true))
 			using (var createTableCommand = new MySqlCommand($"SHOW CREATE TABLE `{table}`", Connection))
 			using (var reader = await createTableCommand.ExecuteReaderAsync())
 			{
@@ -44,7 +44,7 @@ namespace mysqlchump
 			var bodyBuilder = new StringBuilder();
 			Task ioTask = null;
 
-			using (var writer = new StreamWriter(outputStream, Encoding.UTF8, 4096, true))
+			using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), 4096, true))
 			using (var selectCommand = new MySqlCommand(query, Connection, transaction))
 			using (var reader = await selectCommand.ExecuteReaderAsync())
 			{
