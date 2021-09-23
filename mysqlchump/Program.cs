@@ -116,28 +116,28 @@ namespace mysqlchump
 		{
 			public IList<string> Values { get; set; }
 			
-			[CommandDefinition("Table", "t", "table")]
+			[CommandDefinition("t", "table", Description = "Specify the table to be dumped.")]
 			public string Table { get; set; }
 			
-			[CommandDefinition("Tables", null, "tables")]
+			[CommandDefinition(null, "tables", Description = "Specify the tables to be dumped, in a comma-delimited string.")]
 			public string Tables { get; set; }
 
-			[CommandDefinition("Connection String", "c", "connectionString")]
+			[CommandDefinition("c", "connectionString", Description = "The connection string used to connect to the database.", Required = true)]
 			public string ConnectionString { get; set; }
 
-			[CommandDefinition("Output format", null, "format")]
 			public string Format { get; set; } = "mysql";
+			[CommandDefinition("f", "format", Description = "The format to output when generating the dump.")]
 
-			[CommandDefinition("Select query", "s", "select")]
+			[CommandDefinition("s", "select", Description = "The select query to use when filtering rows/columns. If not specified, will dump the entire table.\nCurrent table is specified with \"{table}\"")]
 			public string SelectQuery { get; set; }
 
-			[CommandDefinition("Append", null, "append")]
+			[CommandDefinition(null, "append", Description = "If specified, will append to the specified file instead of overwriting")]
 			public bool Append { get; set; }
 
-			[CommandDefinition("Standard out", null, "stdout")]
+			[CommandDefinition(null, "stdout", Description = "Pipe to stdout instead of writing to a file")]
 			public bool StdOut { get; set; }
 
-			[CommandDefinition("Help", "h", "help")]
+			[CommandDefinition("h", "help", Description = "Display this help message")]
 			public bool Help { get; set; }
 		}
 	}
