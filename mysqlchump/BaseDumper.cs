@@ -70,7 +70,7 @@ namespace mysqlchump
 						if (start)
 						{
 							// Read schema
-							Columns = reader.GetColumnSchema().AsEnumerable().ToArray();
+							Columns = (await reader.GetColumnSchemaAsync()).AsEnumerable().ToArray();
 						}
 						else
 						{
@@ -131,6 +131,50 @@ namespace mysqlchump
 
 			if (columnType == typeof(byte[]))
 				return "_binary 0x" + ByteArrayToString((byte[])value);
+
+			throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
+		}
+
+		protected static string GetPostgresStringRepresentation(DbColumn column, object value)
+		{
+			if (value == null || value == DBNull.Value)
+				return "NULL";
+
+			var columnType = column.DataType;
+
+			if (columnType == typeof(bool) || value is bool)
+				return (bool)value ? "TRUE" : "FALSE";
+
+			if (columnType == typeof(byte)
+				|| columnType == typeof(sbyte)
+				|| columnType == typeof(ushort)
+				|| columnType == typeof(short)
+				|| columnType == typeof(uint)
+				|| columnType == typeof(int)
+				|| columnType == typeof(ulong)
+				|| columnType == typeof(long)
+				|| columnType == typeof(float)
+				|| columnType == typeof(double)
+				|| columnType == typeof(decimal))
+			{
+				return value.ToString();
+			}
+
+			if (columnType == typeof(string))
+				return "E'" + MySqlHelper.EscapeString(value.ToString())
+										.Replace("\r", "\\r")
+										.Replace("\n", "\\n")
+						   + "'";
+
+			if (columnType == typeof(byte[]))
+				// This notation is only supported for Postgres 9.0 and up
+				return "'\\x" + ByteArrayToString((byte[])value) + "\'";
+
+			if (columnType == typeof(DateTime))
+			{
+				var dtValue = (DateTime)value;
+				return $"'{dtValue:yyyy-MM-dd HH:mm:ss}'";
+			}
 
 			throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
 		}

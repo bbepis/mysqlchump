@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using MySqlConnector;
 
 namespace mysqlchump
 {
@@ -18,6 +19,16 @@ namespace mysqlchump
 
 			value = default;
 			return false;
+		}
+
+		public static MySqlCommand SetParam(this MySqlCommand command, string name, object value)
+		{
+			var param = command.CreateParameter();
+			param.ParameterName = name;
+			param.Value = value;
+			command.Parameters.Add(param);
+
+			return command;
 		}
 	}
 }

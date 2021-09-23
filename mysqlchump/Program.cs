@@ -4,6 +4,7 @@ using System.Data;
 using System.IO;
 using System.Threading.Tasks;
 using MySqlConnector;
+using NArgs;
 
 namespace mysqlchump
 {
@@ -34,16 +35,11 @@ namespace mysqlchump
 			if (arguments.ConnectionString == null)
 				throw new ArgumentException("Expecting argument: --connectionString");
 
-			if (arguments.Format.ToLower() != "csv" && arguments.Format.ToLower() != "mysql")
-				throw new ArgumentException($"Unknown format: {arguments.Format}\r\nOnly 'csv' and 'mysql' are accepted");
-
-			bool isCsv = arguments.Format.ToLower() == "csv";
-
 			bool singleTableMode = arguments.Table != null;
 
 			if (singleTableMode)
 			{
-				await DumpSingleTable(arguments.Table, isCsv, selectStatement, arguments.ConnectionString, arguments.Values[0], arguments.StdOut, arguments.Append);
+				await DumpSingleTable(arguments.Table, arguments.Format, selectStatement, arguments.ConnectionString, arguments.Values[0], arguments.StdOut, arguments.Append);
 			}
 			else
 			{
@@ -51,15 +47,19 @@ namespace mysqlchump
 					? arguments.Values[0]
 					: Environment.CurrentDirectory;
 
-				await DumpMultipleTables(tables, isCsv, selectStatement, arguments.ConnectionString, outputFolderPath);
+				await DumpMultipleTables(tables, arguments.Format, selectStatement, arguments.ConnectionString, outputFolderPath);
 			}
 		}
 
-		static async Task DumpTableToStream(string table, bool isCsv, string selectStatement, MySqlConnection connection, Stream stream)
+		static async Task DumpTableToStream(string table, OutputFormatEnum outputFormat, string selectStatement, MySqlConnection connection, Stream stream)
 		{
-			BaseDumper dumper = isCsv
-				? (BaseDumper)new CsvDumper(connection)
-				: (BaseDumper)new MySqlDumper(connection);
+			BaseDumper dumper = outputFormat switch
+			{
+				OutputFormatEnum.mysql => new MySqlDumper(connection),
+				OutputFormatEnum.postgres => new PostgresDumper(connection),
+				OutputFormatEnum.csv => new CsvDumper(connection),
+				_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
+			};
 			
 			await dumper.WriteTableSchemaAsync(table, stream);
 
@@ -69,7 +69,7 @@ namespace mysqlchump
 			}
 		}
 
-		static async Task DumpSingleTable(string table, bool isCsv, string selectStatement, string connectionString, string outputFile, bool standardOut, bool append)
+		static async Task DumpSingleTable(string table, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFile, bool standardOut, bool append)
 		{
 			var stream = standardOut
 				? Console.OpenStandardOutput()
@@ -81,7 +81,7 @@ namespace mysqlchump
 			{
 				await connection.OpenAsync();
 
-				await DumpTableToStream(table, isCsv, formattedQuery, connection, stream);
+				await DumpTableToStream(table, outputFormat, formattedQuery, connection, stream);
 			}
 
 			await stream.FlushAsync();
@@ -90,7 +90,7 @@ namespace mysqlchump
 				await stream.DisposeAsync();
 		}
 
-		static async Task DumpMultipleTables(string[] tables, bool isCsv, string selectStatement, string connectionString, string outputFolder)
+		static async Task DumpMultipleTables(string[] tables, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFolder)
 		{
 			var dateTime = DateTime.Now;
 
@@ -106,11 +106,17 @@ namespace mysqlchump
 				{
 					string formattedQuery = selectStatement.Replace("{table}", table);
 
-					await DumpTableToStream(table, isCsv, formattedQuery, connection, stream);
+					await DumpTableToStream(table, outputFormat, formattedQuery, connection, stream);
 				}
 			}
 		}
 
+		internal enum OutputFormatEnum
+		{
+			mysql,
+			postgres,
+			csv
+		}
 
 		private class MySqlChumpArguments : IArgumentCollection
 		{
@@ -125,8 +131,8 @@ namespace mysqlchump
 			[CommandDefinition("c", "connectionString", Description = "The connection string used to connect to the database.", Required = true)]
 			public string ConnectionString { get; set; }
 
-			public string Format { get; set; } = "mysql";
 			[CommandDefinition("f", "format", Description = "The format to output when generating the dump.")]
+			public OutputFormatEnum Format { get; set; } = OutputFormatEnum.mysql;
 
 			[CommandDefinition("s", "select", Description = "The select query to use when filtering rows/columns. If not specified, will dump the entire table.\nCurrent table is specified with \"{table}\"")]
 			public string SelectQuery { get; set; }
