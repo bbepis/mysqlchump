@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
+using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 using MySqlConnector;
 using NArgs;
@@ -24,12 +26,10 @@ namespace mysqlchump
 			
 			string selectStatement = arguments.SelectQuery ?? "SELECT * FROM `{table}`";
 
-			string[] tables = arguments.Tables?.Split(',', StringSplitOptions.RemoveEmptyEntries);
-
 			if (!arguments.StdOut && arguments.Values.Count < 1)
 				throw new ArgumentException("Expecting argument: output file");
 
-			if (arguments.Table == null && tables == null)
+			if (arguments.Table == null && arguments.Tables == null)
 				throw new ArgumentException("Expecting argument: --table or --tables");
 
 			if (arguments.ConnectionString == null)
@@ -37,17 +37,36 @@ namespace mysqlchump
 
 			bool singleTableMode = arguments.Table != null;
 
-			if (singleTableMode)
+			try
 			{
-				await DumpSingleTable(arguments.Table, arguments.Format, selectStatement, arguments.ConnectionString, arguments.Values[0], arguments.StdOut, arguments.Append);
-			}
-			else
-			{
-				string outputFolderPath = arguments.Values.Count > 0
-					? arguments.Values[0]
-					: Environment.CurrentDirectory;
+				if (singleTableMode)
+				{
+					await DumpSingleTable(arguments.Table, arguments.Format, selectStatement, arguments.ConnectionString, arguments.Values[0], arguments.StdOut, arguments.Append);
+				}
+				else
+				{
+					string outputFolderPath = arguments.Values.Count > 0
+						? arguments.Values[0]
+						: Environment.CurrentDirectory;
 
-				await DumpMultipleTables(tables, arguments.Format, selectStatement, arguments.ConnectionString, outputFolderPath);
+					await DumpMultipleTables(arguments.Tables, arguments.Format, selectStatement, arguments.ConnectionString, outputFolderPath);
+				}
+			}
+			catch (Exception ex)
+			{
+				var errorBuilder = new StringBuilder();
+				errorBuilder.AppendLine("Unrecoverable error");
+				errorBuilder.AppendLine(ex.ToStringDemystified());
+
+				if (arguments.StdOut)
+				{
+					var stderr = new StreamWriter(Console.OpenStandardError());
+					stderr.Write(errorBuilder.ToString());
+				}
+				else
+				{
+					Console.Write(errorBuilder.ToString());
+				}
 			}
 		}
 
@@ -90,13 +109,46 @@ namespace mysqlchump
 				await stream.DisposeAsync();
 		}
 
-		static async Task DumpMultipleTables(string[] tables, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFolder)
+		private static async Task<string[]> GetAllTablesFromDatabase(MySqlConnection connection)
+		{
+			string databaseName = connection.Database;
+
+			const string commandText =
+				"SELECT TABLE_NAME " +
+				"FROM INFORMATION_SCHEMA.TABLES " +
+				"WHERE TABLE_SCHEMA = @databasename";
+
+			await using var createTableCommand = new MySqlCommand(commandText, connection)
+				.SetParam("@databasename", databaseName);
+
+			await using var reader = await createTableCommand.ExecuteReaderAsync();
+
+			List<string> tableList = new List<string>();
+
+			while (await reader.ReadAsync())
+				tableList.Add(reader.GetString(0));
+
+			return tableList.ToArray();
+		}
+
+		static async Task DumpMultipleTables(string multiTableArgument, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFolder)
 		{
 			var dateTime = DateTime.Now;
 
 			await using var connection = new MySqlConnection(connectionString);
 
 			await connection.OpenAsync();
+
+			string[] tables;
+
+			if (multiTableArgument == "*")
+			{
+				tables = await GetAllTablesFromDatabase(connection);
+			}
+			else
+			{
+				tables = multiTableArgument.Split(',', StringSplitOptions.RemoveEmptyEntries);
+			}
 
 			foreach (var table in tables)
 			{
