@@ -177,6 +177,7 @@ namespace mysqlchump
 					// As far as I'm aware there's no types in mysql that have timezone information.
 
 					case "datetime":
+					case "timestamp":
 					{
 						typeName = "timestamp without time zone";
 						break;
