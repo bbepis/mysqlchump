@@ -27,9 +27,7 @@ namespace mysqlchump
 					"WHERE TABLE_SCHEMA = @databasename AND TABLE_NAME = @tablename " +
 					"ORDER BY ORDINAL_POSITION ASC";
 
-			await using var createTableCommand = new MySqlCommand(
-					commandText,
-					Connection)
+			await using var createTableCommand = new MySqlCommand(commandText, Connection)
 				.SetParam("@databasename", databaseName)
 				.SetParam("@tablename", table);
 
@@ -73,9 +71,7 @@ namespace mysqlchump
 					"FROM INFORMATION_SCHEMA.TABLES " +
 					"WHERE TABLE_SCHEMA = @databasename AND TABLE_NAME = @tablename";
 
-			await using var createTableCommand = new MySqlCommand(
-					commandText,
-					Connection)
+			await using var createTableCommand = new MySqlCommand(commandText, Connection)
 				.SetParam("@databasename", databaseName)
 				.SetParam("@tablename", table);
 
