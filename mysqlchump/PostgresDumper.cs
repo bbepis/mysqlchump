@@ -95,6 +95,8 @@ namespace mysqlchump
 
 			bool firstRun = true;
 
+			bool pkEnabled = SourceTableSchema.Count(kv => (string)kv.Value["COLUMN_KEY"] == "PRI") == 1;
+
 			foreach (var (columnName, schemaRow) in SourceTableSchema)
 			{
 				if (!firstRun)
@@ -104,11 +106,11 @@ namespace mysqlchump
 
 				// There will be a lot of assumptions / limitations here.
 
-				// Indexes (other than PRIMARY KEY) are not supported.
+				// Indexes (other than a single-column PRIMARY KEY) are not supported.
 				// Constraints (other than UNIQUE) are not supported.
 				// Generated columns will not be handled correctly.
 				// Default values/expressions are not supported.
-				
+
 				await writer.WriteAsync("\t\"");
 				await writer.WriteAsync(columnName);
 				await writer.WriteAsync("\"\t");
@@ -211,7 +213,7 @@ namespace mysqlchump
 
 				await writer.WriteAsync(typeName);
 
-				if ((string)schemaRow["COLUMN_KEY"] == "PRI")
+				if (pkEnabled && (string)schemaRow["COLUMN_KEY"] == "PRI")
 					await writer.WriteAsync(" PRIMARY KEY");
 				else if ((string)schemaRow["COLUMN_KEY"] == "UNI")
 					await writer.WriteAsync(" UNIQUE");
