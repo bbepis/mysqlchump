@@ -116,7 +116,8 @@ namespace mysqlchump
 				await writer.WriteAsync("\"\t");
 
 				string typeName;
-				bool autoIncrement = ((string)schemaRow["EXTRA"]).Contains("auto_increment", StringComparison.OrdinalIgnoreCase);
+				bool autoIncrement =
+					((string)schemaRow["EXTRA"]).Contains("auto_increment", StringComparison.OrdinalIgnoreCase);
 
 				var dataType = (string)schemaRow["DATA_TYPE"];
 				switch (dataType.ToLower())
@@ -227,9 +228,18 @@ namespace mysqlchump
 			await writer.WriteLineAsync("");
 			await writer.WriteLineAsync(");");
 
-			//await writer.WriteLineAsync("");
-			//await writer.WriteLineAsync("");
-			//await writer.WriteLineAsync($"ALTER SEQUENCE")
+			string autoIncrementColumn = SourceTableSchema.FirstOrDefault(kv =>
+				((string)kv.Value["EXTRA"]).Contains("auto_increment", StringComparison.OrdinalIgnoreCase)).Key;
+
+			if (autoIncrementColumn != null)
+			{
+				var autoIncrementValue = await GetAutoIncrementValue(table);
+
+				await writer.WriteLineAsync("");
+				await writer.WriteLineAsync("");
+				await writer.WriteLineAsync(
+					$"SELECT setval('\"import\".\"{table}_{autoIncrementColumn}_seq\"', {autoIncrementValue});");
+			}
 
 			await writer.WriteLineAsync("");
 			await writer.WriteLineAsync("");
