@@ -32,7 +32,7 @@ namespace mysqlchump
 			if (arguments.Table == null && arguments.Tables == null)
 				throw new ArgumentException("Expecting argument: --table or --tables");
 
-			if (arguments.ConnectionString == null)
+			if (string.IsNullOrWhiteSpace(arguments.ConnectionString))
 				throw new ArgumentException("Expecting argument: --connectionString");
 
 			bool singleTableMode = arguments.Table != null;
@@ -180,7 +180,7 @@ namespace mysqlchump
 			[CommandDefinition(null, "tables", Description = "Specify the tables to be dumped, in a comma-delimited string.")]
 			public string Tables { get; set; }
 
-			[CommandDefinition("c", "connectionString", Description = "The connection string used to connect to the database.", Required = true)]
+			[CommandDefinition("c", "connectionString", Description = "The connection string used to connect to the database.")]
 			public string ConnectionString { get; set; }
 
 			[CommandDefinition("f", "format", Description = "The format to output when generating the dump.")]
