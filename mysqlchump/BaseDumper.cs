@@ -120,6 +120,12 @@ namespace mysqlchump
 				return value.ToString();
 			}
 
+            if (columnType == typeof(DateTime))
+            {
+                var dtValue = (DateTime)value;
+                return $"'{dtValue:yyyy-MM-dd HH:mm:ss}'";
+            }
+
 			if (columnType == typeof(bool))
 				return (bool)value ? "1" : "0";
 
