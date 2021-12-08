@@ -82,7 +82,7 @@ namespace mysqlchump
 		{
 			await GetSchema(table);
 
-			await using var writer = new StreamWriter(outputStream, new UTF8Encoding(false), 4096, true);
+			await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
 
 			await writer.WriteLineAsync($"CREATE SCHEMA IF NOT EXISTS \"import\";");
 			await writer.WriteLineAsync();

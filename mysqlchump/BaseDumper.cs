@@ -41,7 +41,7 @@ namespace mysqlchump
 
 			Task ioTask = null;
 
-			using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), 4096, true))
+			using (var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true))
 			using (var selectCommand = new MySqlCommand(query, Connection, transaction))
 			using (var reader = await selectCommand.ExecuteReaderAsync())
 			{

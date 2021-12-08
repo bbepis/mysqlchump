@@ -14,7 +14,7 @@ namespace mysqlchump
 
 		public override async Task WriteTableSchemaAsync(string table, Stream outputStream)
 		{
-			using (var writer = new StreamWriter(outputStream, new UTF8Encoding(false), 4096, true))
+			using (var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true))
 			using (var createTableCommand = new MySqlCommand($"SHOW CREATE TABLE `{table}`", Connection))
 			using (var reader = await createTableCommand.ExecuteReaderAsync())
 			{
