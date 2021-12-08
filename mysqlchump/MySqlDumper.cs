@@ -30,8 +30,13 @@ namespace mysqlchump
 			}
 		}
 
-		protected override void StartInsertBatch(string table, DbDataReader reader, StringBuilder builder)
-		{
+        public override async Task WriteTruncateAsync(string table, Stream outputStream)
+        {
+            await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
+
+            await writer.WriteAsync($"TRUNCATE `{table}`;\n\n");
+        }
+
         private async Task<ulong?> GetAutoIncrementValue(string table, MySqlTransaction transaction = null)
         {
             string databaseName = Connection.Database;
@@ -64,6 +69,8 @@ namespace mysqlchump
 			    await writer.WriteAsync($"ALTER TABLE `{table}` AUTO_INCREMENT={autoIncrement};\n\n");
         }
 
+        protected override void StartInsertBatch(string table, DbDataReader reader, StringBuilder builder)
+        {
 			builder.AppendLine($"INSERT INTO `{table}` ({string.Join(", ", Columns.Select(column => $"`{column.ColumnName}`"))}) VALUES");
 		}
 

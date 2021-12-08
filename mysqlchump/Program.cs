@@ -72,7 +72,7 @@ namespace mysqlchump
 			}
 		}
 
-		static async Task DumpTableToStream(string table, OutputFormatEnum outputFormat, string selectStatement, MySqlConnection connection, Stream stream)
+		static async Task DumpTableToStream(string table, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, MySqlConnection connection, Stream stream)
 		{
 			BaseDumper dumper = outputFormat switch
 			{
@@ -81,17 +81,26 @@ namespace mysqlchump
 				OutputFormatEnum.csv => new CsvDumper(connection),
 				_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
 			};
-			
-			await dumper.WriteTableSchemaAsync(table, stream);
+
+            if (!skipSchema)
+            {
+                await dumper.WriteTableSchemaAsync(table, stream);
+			}
+
 			await dumper.WriteAutoIncrementAsync(table, stream);
 
-			await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
+			if (truncate)
+            {
+                await dumper.WriteTruncateAsync(table, stream);
+            }
+
+            await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
 			{
 				await dumper.WriteInsertQueries(table, selectStatement, stream, transaction);
 			}
 		}
 
-		static async Task DumpSingleTable(string table, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFile, bool standardOut, bool append)
+		static async Task DumpSingleTable(string table, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFile, bool standardOut, bool append)
 		{
 			var stream = standardOut
 				? Console.OpenStandardOutput()
@@ -103,7 +112,8 @@ namespace mysqlchump
 			{
 				await connection.OpenAsync();
 
-				await DumpTableToStream(table, outputFormat, formattedQuery, connection, stream);
+
+				await DumpTableToStream(table, skipSchema, truncate, outputFormat, formattedQuery, connection, stream);
 			}
 
 			await stream.FlushAsync();
@@ -134,7 +144,7 @@ namespace mysqlchump
 			return tableList.ToArray();
 		}
 
-		static async Task DumpMultipleTables(string multiTableArgument, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFolder)
+		static async Task DumpMultipleTables(string multiTableArgument, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFolder, bool stdOut)
 		{
 			var dateTime = DateTime.Now;
 
@@ -155,13 +165,13 @@ namespace mysqlchump
 
             if (!stdOut)
             {
-			foreach (var table in tables)
-			{
-				string dumpFileName = $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.sql";
+                foreach (var table in tables)
+                {
+                    string dumpFileName = $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.sql";
 
-				await using (var stream = new FileStream(Path.Combine(outputFolder, dumpFileName), FileMode.CreateNew))
-				{
-					string formattedQuery = selectStatement.Replace("{table}", table);
+                    await using (var stream = new FileStream(Path.Combine(outputFolder, dumpFileName), FileMode.CreateNew))
+                    {
+                        string formattedQuery = selectStatement.Replace("{table}", table);
 
                         await DumpTableToStream(table, skipSchema, truncate, outputFormat, formattedQuery, connection, stream);
                     }
@@ -181,7 +191,7 @@ namespace mysqlchump
 
                     await streamWriter.WriteAsync("\n\n\n");
                     await streamWriter.FlushAsync();
-				}
+                }
 			}
 		}
 
@@ -207,6 +217,12 @@ namespace mysqlchump
 
 			[CommandDefinition("f", "format", Description = "The format to output when generating the dump.")]
 			public OutputFormatEnum Format { get; set; } = OutputFormatEnum.mysql;
+
+			[CommandDefinition("n", "no-creation", Description = "Don't output table creation statements")]
+			public bool NoCreation { get; set; }
+
+			[CommandDefinition("t", "truncate", Description = "Prepend data insertions with a TRUNCATE command.")]
+			public bool Truncate { get; set; }
 
 			[CommandDefinition("s", "select", Description = "The select query to use when filtering rows/columns. If not specified, will dump the entire table.\nCurrent table is specified with \"{table}\"")]
 			public string SelectQuery { get; set; }
