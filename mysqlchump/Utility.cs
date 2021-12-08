@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Text;
+using System.Threading.Tasks;
 using MySqlConnector;
 
 namespace mysqlchump
@@ -33,5 +35,12 @@ namespace mysqlchump
 
 			return command;
 		}
+
+        public static async Task WriteToStreamAsync(this Stream stream, string text)
+        {
+            await using var writer = new StreamWriter(stream, Utility.NoBomUtf8, 4096, true);
+
+			await writer.WriteAsync(text);
+        }
 	}
 }

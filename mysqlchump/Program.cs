@@ -88,6 +88,8 @@ namespace mysqlchump
 			}
 
 			await dumper.WriteAutoIncrementAsync(table, stream);
+            await stream.WriteToStreamAsync("SET SESSION time_zone = \"+00:00\";\n");
+            await stream.WriteToStreamAsync("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
 
 			if (truncate)
             {
@@ -112,6 +114,7 @@ namespace mysqlchump
 			{
 				await connection.OpenAsync();
 
+                await BaseDumper.InitializeConnection(connection);
 
 				await DumpTableToStream(table, skipSchema, truncate, outputFormat, formattedQuery, connection, stream);
 			}
@@ -151,6 +154,8 @@ namespace mysqlchump
 			await using var connection = new MySqlConnection(connectionString);
 
 			await connection.OpenAsync();
+
+            await BaseDumper.InitializeConnection(connection);
 
 			string[] tables;
 

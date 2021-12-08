@@ -33,6 +33,16 @@ namespace mysqlchump
 
 		protected virtual void WriteInsertContinuation(StringBuilder builder) { }
 
+        public static async Task InitializeConnection(MySqlConnection connection)
+        {
+			// Set the session timezone to UTC so that we get consistent UTC timestamps
+
+            using (var command = new MySqlCommand(@"SET SESSION time_zone = ""+00:00"";", connection))
+            {
+                await command.ExecuteNonQueryAsync();
+            }
+        }
+
 		public async Task WriteInsertQueries(string table, string query, Stream outputStream, MySqlTransaction transaction = null)
 		{
 			int counter = 0;
