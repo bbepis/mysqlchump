@@ -20,7 +20,7 @@ namespace mysqlchump
 			{
 				Console.WriteLine("Usage:");
 				Console.WriteLine("mysqlchump --table <table> --connectionString <connection string> [--select <select sql statement>] [--format mysql|csv] [--append] (--stdout | <output file>)");
-				Console.WriteLine("mysqlchump --tables <comma separated table names> --connectionString <connection string> [--select <select sql statement>] [--format mysql|csv] [<output folder>]");
+				Console.WriteLine("mysqlchump --tables <comma separated table names> --connectionString <connection string> [--select <select sql statement>] [--format mysql|csv] [--stdout | <output folder>]");
 				return;
 			}
 			
@@ -41,7 +41,8 @@ namespace mysqlchump
 			{
 				if (singleTableMode)
 				{
-					await DumpSingleTable(arguments.Table, arguments.Format, selectStatement, arguments.ConnectionString, arguments.Values[0], arguments.StdOut, arguments.Append);
+					await DumpSingleTable(arguments.Table, arguments.NoCreation, arguments.Truncate, arguments.Format, selectStatement,
+                        arguments.ConnectionString, arguments.Values[0], arguments.StdOut, arguments.Append);
 				}
 				else
 				{
@@ -49,7 +50,8 @@ namespace mysqlchump
 						? arguments.Values[0]
 						: Environment.CurrentDirectory;
 
-					await DumpMultipleTables(arguments.Tables, arguments.Format, selectStatement, arguments.ConnectionString, outputFolderPath);
+					await DumpMultipleTables(arguments.Tables, arguments.NoCreation, arguments.Truncate, arguments.Format, selectStatement,
+                        arguments.ConnectionString, outputFolderPath, arguments.StdOut);
 				}
 			}
 			catch (Exception ex)
@@ -150,6 +152,8 @@ namespace mysqlchump
 				tables = multiTableArgument.Split(',', StringSplitOptions.RemoveEmptyEntries);
 			}
 
+            if (!stdOut)
+            {
 			foreach (var table in tables)
 			{
 				string dumpFileName = $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.sql";
@@ -158,7 +162,24 @@ namespace mysqlchump
 				{
 					string formattedQuery = selectStatement.Replace("{table}", table);
 
-					await DumpTableToStream(table, outputFormat, formattedQuery, connection, stream);
+                        await DumpTableToStream(table, skipSchema, truncate, outputFormat, formattedQuery, connection, stream);
+                    }
+                }
+			}
+            else
+            {
+                var stream = Console.OpenStandardOutput();
+
+                using var streamWriter = new StreamWriter(stream, Utility.NoBomUtf8, 4096, true);
+
+                foreach (var table in tables)
+                {
+                    string formattedQuery = selectStatement.Replace("{table}", table);
+
+                    await DumpTableToStream(table, skipSchema, truncate, outputFormat, formattedQuery, connection, stream);
+
+                    await streamWriter.WriteAsync("\n\n\n");
+                    await streamWriter.FlushAsync();
 				}
 			}
 		}
