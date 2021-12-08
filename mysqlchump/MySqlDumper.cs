@@ -32,6 +32,38 @@ namespace mysqlchump
 
 		protected override void StartInsertBatch(string table, DbDataReader reader, StringBuilder builder)
 		{
+        private async Task<ulong?> GetAutoIncrementValue(string table, MySqlTransaction transaction = null)
+        {
+            string databaseName = Connection.Database;
+
+            const string commandText =
+                "SELECT AUTO_INCREMENT " +
+                "FROM INFORMATION_SCHEMA.TABLES " +
+                "WHERE TABLE_SCHEMA = @databasename AND TABLE_NAME = @tablename";
+
+            await using var createTableCommand = new MySqlCommand(commandText, Connection, transaction)
+                .SetParam("@databasename", databaseName)
+                .SetParam("@tablename", table);
+
+
+            var result = await createTableCommand.ExecuteScalarAsync();
+
+            if (result == DBNull.Value)
+                return null;
+
+			return Convert.ToUInt64(result);
+        }
+
+		public override async Task WriteAutoIncrementAsync(string table, Stream outputStream, MySqlTransaction transaction = null)
+        {
+            await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
+
+            var autoIncrement = await GetAutoIncrementValue(table, transaction);
+			
+			if (autoIncrement.HasValue)
+			    await writer.WriteAsync($"ALTER TABLE `{table}` AUTO_INCREMENT={autoIncrement};\n\n");
+        }
+
 			builder.AppendLine($"INSERT INTO `{table}` ({string.Join(", ", Columns.Select(column => $"`{column.ColumnName}`"))}) VALUES");
 		}
 

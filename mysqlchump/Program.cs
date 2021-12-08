@@ -83,6 +83,7 @@ namespace mysqlchump
 			};
 			
 			await dumper.WriteTableSchemaAsync(table, stream);
+			await dumper.WriteAutoIncrementAsync(table, stream);
 
 			await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
 			{
