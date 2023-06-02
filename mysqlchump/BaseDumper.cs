@@ -131,6 +131,11 @@ namespace mysqlchump
 				return value.ToString();
 			}
 
+			if (columnType == typeof(MySqlDecimal))
+			{
+				return ((MySqlDecimal)value).ToString();
+			}
+
             if (columnType == typeof(DateTime))
             {
                 var dtValue = (DateTime)value;
@@ -141,10 +146,14 @@ namespace mysqlchump
 				return (bool)value ? "1" : "0";
 
 			if (columnType == typeof(string))
-				return "'" + MySqlHelper.EscapeString(value.ToString())
+			{
+				var innerString = MySqlHelper.EscapeString(value.ToString())
 										.Replace("\r", "\\r")
 										.Replace("\n", "\\n")
-						   + "'";
+					.Replace("\0", "\\0");
+
+				return $"'{innerString}'";
+			}
 
 			if (columnType == typeof(byte[]))
 				return "_binary 0x" + ByteArrayToString((byte[])value);

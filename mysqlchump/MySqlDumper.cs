@@ -97,7 +97,11 @@ namespace mysqlchump
 				if (!rowStart)
 					builder.Append(", ");
 
-				builder.Append(GetMySqlStringRepresentation(column, reader[column.ColumnName]));
+				object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal)) && reader is MySqlDataReader mysqlReader
+					? mysqlReader.GetMySqlDecimal(column.ColumnName)
+					: reader[column.ColumnName];
+
+				builder.Append(GetMySqlStringRepresentation(column, value));
 
 				rowStart = false;
 			}

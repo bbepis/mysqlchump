@@ -18,12 +18,16 @@ namespace mysqlchump
 				if (!rowStart)
 					builder.Append(",");
 
-				StringToCsvCell(GetSlimlinedMySqlStringRepresentation(column, reader[column.ColumnName]), builder);
+				object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal)) && reader is MySqlDataReader mysqlReader
+					? mysqlReader.GetMySqlDecimal(column.ColumnName)
+					: reader[column.ColumnName];
+
+				StringToCsvCell(GetSlimlinedMySqlStringRepresentation(column, value), builder);
 
 				rowStart = false;
 			}
 
-			builder.Append("\r\n");
+			builder.AppendLine();
 		}
 
 		// https://stackoverflow.com/a/6377656
@@ -53,8 +57,12 @@ namespace mysqlchump
 
 			var columnType = column.DataType;
 
-			if (columnType == typeof(string)
-			    || columnType == typeof(byte)
+			if (columnType == typeof(string))
+			{
+				return value.ToString().Replace("\\", "\\\\");
+			}
+
+			if (columnType == typeof(byte)
 			    || columnType == typeof(sbyte)
 			    || columnType == typeof(ushort)
 			    || columnType == typeof(short)
