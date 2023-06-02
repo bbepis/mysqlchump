@@ -12,12 +12,16 @@ namespace mysqlchump
 	{
 		public MySqlDumper(MySqlConnection connection) : base(connection) { }
 
-		public override async Task WriteTableSchemaAsync(string table, Stream outputStream)
+		public override async Task WriteStartTableAsync(string table, Stream outputStream, bool writeSchema, bool truncate)
 		{
-			using (var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true))
-			using (var createTableCommand = new MySqlCommand($"SHOW CREATE TABLE `{table}`", Connection))
-			using (var reader = await createTableCommand.ExecuteReaderAsync())
+			using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
+
+			if (writeSchema)
 			{
+				using var createTableCommand = new MySqlCommand($"SHOW CREATE TABLE `{table}`", Connection);
+				using var reader = await createTableCommand.ExecuteReaderAsync();
+
+
 				if (!await reader.ReadAsync())
 					throw new ArgumentException($"Could not find table `{table}`");
 
@@ -28,14 +32,33 @@ namespace mysqlchump
 				await writer.WriteAsync(createSql);
 				await writer.WriteAsync(";\n\n\n");
 			}
+			
+			var autoIncrement = await GetAutoIncrementValue(table);
+
+			if (autoIncrement.HasValue)
+				await writer.WriteAsync($"ALTER TABLE `{table}` AUTO_INCREMENT={autoIncrement};\n\n");
+			
+			await writer.WriteAsync("SET SESSION time_zone = \"+00:00\";\n");
+			await writer.WriteAsync("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
+
+			await writer.WriteAsync("ALTER INSTANCE DISABLE INNODB REDO_LOG;\n\n");
+
+            if (truncate)
+                await writer.WriteAsync($"TRUNCATE `{table}`;\n");
+
+            await writer.WriteAsync("SET autocommit=0;\n");
+			await writer.WriteAsync("START TRANSACTION;\n");
+
+			await writer.WriteAsync("\n");
 		}
 
-        public override async Task WriteTruncateAsync(string table, Stream outputStream)
+        public override async Task WriteEndTableAsync(string table, Stream outputStream)
         {
             await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
-
-            await writer.WriteAsync($"TRUNCATE `{table}`;\n\n");
-        }
+			
+            await writer.WriteAsync("COMMIT;\n");
+            await writer.WriteAsync("ALTER INSTANCE ENABLE INNODB REDO_LOG;\n\n");
+		}
 
         private async Task<ulong?> GetAutoIncrementValue(string table, MySqlTransaction transaction = null)
         {
@@ -57,16 +80,6 @@ namespace mysqlchump
                 return null;
 
 			return Convert.ToUInt64(result);
-        }
-
-		public override async Task WriteAutoIncrementAsync(string table, Stream outputStream, MySqlTransaction transaction = null)
-        {
-            await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
-
-            var autoIncrement = await GetAutoIncrementValue(table, transaction);
-			
-			if (autoIncrement.HasValue)
-			    await writer.WriteAsync($"ALTER TABLE `{table}` AUTO_INCREMENT={autoIncrement};\n\n");
         }
 
         protected override void StartInsertBatch(string table, DbDataReader reader, StringBuilder builder)

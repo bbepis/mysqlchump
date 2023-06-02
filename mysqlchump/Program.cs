@@ -82,24 +82,14 @@ namespace mysqlchump
 				_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
 			};
 
-            if (!skipSchema)
-            {
-                await dumper.WriteTableSchemaAsync(table, stream);
-			}
+			await dumper.WriteStartTableAsync(table, stream, !skipSchema, truncate);
 
-			await dumper.WriteAutoIncrementAsync(table, stream);
-            await stream.WriteToStreamAsync("SET SESSION time_zone = \"+00:00\";\n");
-            await stream.WriteToStreamAsync("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
-
-			if (truncate)
-            {
-                await dumper.WriteTruncateAsync(table, stream);
-            }
-
-            await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
+			await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
 			{
 				await dumper.WriteInsertQueries(table, selectStatement, stream, transaction);
 			}
+
+			await dumper.WriteEndTableAsync(table, stream);
 		}
 
 		static async Task DumpSingleTable(string table, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFile, bool standardOut, bool append)

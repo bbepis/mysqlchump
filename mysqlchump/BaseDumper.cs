@@ -25,9 +25,8 @@ namespace mysqlchump
 
 		protected abstract void CreateInsertLine(DbDataReader reader, StringBuilder builder);
 
-		public virtual Task WriteTableSchemaAsync(string table, Stream outputStream) => Task.CompletedTask;
-		public virtual Task WriteTruncateAsync(string table, Stream outputStream) => Task.CompletedTask;
-		public virtual Task WriteAutoIncrementAsync(string table, Stream outputStream, MySqlTransaction transaction = null) => Task.CompletedTask;
+		public virtual Task WriteStartTableAsync(string table, Stream outputStream, bool writeSchema, bool truncate) => Task.CompletedTask;
+		public virtual Task WriteEndTableAsync(string table, Stream outputStream) => Task.CompletedTask;
 
 		protected virtual void WriteInsertEnd(StringBuilder builder) { }
 

@@ -78,9 +78,12 @@ namespace mysqlchump
 			return Convert.ToUInt64(await createTableCommand.ExecuteScalarAsync());
 		}
 
-		public override async Task WriteTableSchemaAsync(string table, Stream outputStream)
+		public override async Task WriteStartTableAsync(string table, Stream outputStream, bool writeSchema, bool truncate)
 		{
 			await GetSchema(table);
+
+			if (!writeSchema)
+				return;
 
 			await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
 
