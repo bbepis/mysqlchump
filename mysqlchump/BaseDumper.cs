@@ -1,6 +1,8 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.Data.Common;
 using System.Data.SqlTypes;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -50,29 +52,60 @@ namespace mysqlchump
 			var bodyBuilder = new StringBuilder();
 			//Memory<char> bufferString = new char[1024 * 1024];
 
+			var dumpTimer = new Stopwatch();
+			dumpTimer.Start();
+
 			Task ioTask = null;
 
-			using (var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true))
-			using (var selectCommand = new MySqlCommand(query, Connection, transaction))
-			using (var reader = await selectCommand.ExecuteReaderAsync())
+			ulong? rowCount = null;
+
+			await using (var rowCountCommand = new MySqlCommand(query, Connection, transaction))
 			{
-				async Task FlushStringBuilderToDisk()
-				{
-					if (ioTask != null)
-						await ioTask;
+				rowCountCommand.CommandText =
+					$"SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{table}' AND TABLE_SCHEMA = '{Connection.Database}';";
+				rowCount = (ulong)await rowCountCommand.ExecuteScalarAsync();
+			}
 
-					//bodyBuilder.CopyTo(0, bufferString.Span, bodyBuilder.Length);
-					//ioTask = writer.WriteAsync(bufferString.Slice(0, bodyBuilder.Length));
-					ioTask = writer.WriteAsync(bodyBuilder.ToString());
-					bodyBuilder.Clear();
-				}
 
-				bool start = true;
+			using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
+			using var selectCommand = new MySqlCommand(query, Connection, transaction);
 
+			selectCommand.CommandTimeout = 3600;
+
+			using var reader = await selectCommand.ExecuteReaderAsync();
+
+			async Task FlushStringBuilderToDisk()
+			{
+				if (ioTask != null)
+					await ioTask;
+
+				//bodyBuilder.CopyTo(0, bufferString.Span, bodyBuilder.Length);
+				//ioTask = writer.WriteAsync(bufferString.Slice(0, bodyBuilder.Length));
+				ioTask = writer.WriteAsync(bodyBuilder.ToString());
+				bodyBuilder.Clear();
+			}
+
+			void writeProgress(long currentRow)
+			{
+				Console.Error.Write("\u001b[1000D"); // move cursor to the left
+				Console.Error.Write($"{table} - {currentRow:N0} / {rowCount?.ToString("N0") ?? "?"} ({(rowCount.HasValue ? (100d * currentRow / rowCount.Value).ToString("N2") : "?")} %)");
+			}
+
+			bool start = true;
+			try
+			{
 				while (await reader.ReadAsync())
 				{
 					if (counter++ % splitCounter == 0 || start)
 					{
+						//Console.WriteLine($"Flushed: {counter}");
+
+						if (!Console.IsErrorRedirected && dumpTimer.ElapsedMilliseconds >= 1000)
+						{
+							writeProgress(counter);
+							dumpTimer.Restart();
+						}
+
 						if (bodyBuilder.Length > 0)
 						{
 							await FlushStringBuilderToDisk();
@@ -99,14 +132,39 @@ namespace mysqlchump
 
 					CreateInsertLine(reader, bodyBuilder);
 				}
-
-				WriteInsertEnd(bodyBuilder);
-
-				await FlushStringBuilderToDisk();
-
-				if (ioTask != null)
-					await ioTask;
 			}
+			catch (Exception)
+			{
+				List<string> columnValues = new List<string>();
+
+				for (int i = 0; i < reader.FieldCount; i++)
+				{
+					try
+					{
+						columnValues.Add(reader[i]?.ToString() ?? "<NULL>");
+					}
+					catch
+					{
+						columnValues.Add("<ERROR>");
+					}
+				}
+				
+				Console.Error.WriteLine();
+				Console.Error.WriteLine(string.Join(", ", Columns.Select(x => x.ColumnName)));
+				Console.Error.WriteLine(string.Join(", ", columnValues));
+
+				throw;
+			}
+
+			WriteInsertEnd(bodyBuilder);
+
+			await FlushStringBuilderToDisk();
+
+			writeProgress(counter);
+			Console.Error.WriteLine();
+
+			if (ioTask != null)
+				await ioTask;
 		}
 
 		protected static string GetMySqlStringRepresentation(DbColumn column, object value)
@@ -148,8 +206,8 @@ namespace mysqlchump
 			if (columnType == typeof(string))
 			{
 				var innerString = MySqlHelper.EscapeString(value.ToString())
-										.Replace("\r", "\\r")
-										.Replace("\n", "\\n")
+					.Replace("\r", "\\r")
+					.Replace("\n", "\\n")
 					.Replace("\0", "\\0");
 
 				return $"'{innerString}'";
