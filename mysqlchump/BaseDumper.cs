@@ -87,8 +87,19 @@ namespace mysqlchump
 
 			void writeProgress(long currentRow)
 			{
-				Console.Error.Write("\u001b[1000D"); // move cursor to the left
-				Console.Error.Write($"{table} - {currentRow:N0} / {rowCount?.ToString("N0") ?? "?"} ({(rowCount.HasValue ? (100d * currentRow / rowCount.Value).ToString("N2") : "?")} %)");
+				if (OperatingSystem.IsWindows())
+					Console.CursorLeft = 0;
+				else
+					Console.Error.Write("\u001b[1000D"); // move cursor to the left
+
+				double percentage = 100 * currentRow / (double)rowCount.Value;
+				if (percentage > 100)
+				{
+					// mysql stats are untrustworthy
+					percentage = 100;
+				}
+
+                Console.Error.Write($"{table} - {currentRow:N0} / {(rowCount.HasValue ? $"~{rowCount:N0}" : "?")} ({(rowCount.HasValue ? percentage.ToString("N2") : "?")} %)");
 			}
 
 			bool start = true;
