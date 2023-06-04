@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using mysqlchump.Import;
 using MySqlConnector;
 
 namespace mysqlchump;
@@ -74,7 +75,38 @@ class Program
 				result.GetValueForOption(appendOption), result.GetValueForArgument(outputFileArgument));
 		});
 
-		rootCommand.Add(dumpCommand);
+		rootCommand.Add(exportCommand);
+		
+        var inputFormatOption = new Option<InputFormatEnum>(new[] { "--input-format", "-f" }, () => InputFormatEnum.mysqlForceBatch, "The input format to use when importing.");
+        var inputFileArgument = new Argument<string>("input file", "Specify a file to read from. Otherwise - for stdin") { Arity = ArgumentArity.ExactlyOne };
+
+        var importCommand = new Command("import", "Imports data to a database")
+        {
+            connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, inputFormatOption, inputFileArgument
+        };
+
+        importCommand.SetHandler(async context =>
+        {
+            var result = context.ParseResult;
+
+            string connectionString = result.GetValueForOption(connectionStringOption);
+
+            if (string.IsNullOrWhiteSpace(connectionString))
+            {
+                var csBuilder = new MySqlConnectionStringBuilder();
+                csBuilder.Server = result.GetValueForOption(serverOption);
+                csBuilder.Port = result.GetValueForOption(portOption);
+                csBuilder.Database = result.GetValueForOption(databaseOption);
+                csBuilder.UserID = result.GetValueForOption(usernameOption);
+                csBuilder.Password = result.GetValueForOption(passwordOption);
+
+                connectionString = csBuilder.ToString();
+            }
+
+            context.ExitCode = await ImportMainAsync(connectionString, result.GetValueForOption(inputFormatOption), result.GetValueForArgument(inputFileArgument));
+        });
+
+		rootCommand.AddCommand(importCommand);
 
 		return rootCommand;
 	}
@@ -151,7 +183,45 @@ class Program
 		finally
 		{
 			if (!stdout && currentStream != null)
-				currentStream.Dispose();
+				await currentStream.DisposeAsync();
+		}
+	}
+
+	static async Task<int> ImportMainAsync(string connectionString, InputFormatEnum outputFormat, string inputLocation)
+	{
+		bool stdin = inputLocation == "-";
+
+		Stream currentStream = stdin
+            ? Console.OpenStandardInput()
+            : new FileStream(inputLocation, FileMode.Open, FileAccess.Read, FileShare.Read);
+
+		try
+		{
+			await using var connection = new MySqlConnection(connectionString);
+
+			await connection.OpenAsync();
+
+			await BaseDumper.InitializeConnection(connection);
+
+            var importer = new MysqlBatchImporter();
+            await importer.ImportAsync(currentStream, connection);
+
+			return 0;
+		}
+		catch (Exception ex)
+		{
+			var errorBuilder = new StringBuilder();
+			errorBuilder.AppendLine("Unrecoverable error");
+			errorBuilder.AppendLine(ex.ToStringDemystified());
+			
+			Console.Write(errorBuilder.ToString());
+
+			return 1;
+		}
+		finally
+		{
+			if (!stdin)
+				await currentStream.DisposeAsync();
 		}
 	}
 
@@ -203,4 +273,9 @@ class Program
 		postgres,
 		csv
 	}
+
+    internal enum InputFormatEnum
+    {
+        mysqlForceBatch
+    }
 }
