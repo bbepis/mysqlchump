@@ -1,143 +1,95 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.CommandLine;
 using System.Data;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using MySqlConnector;
-using NArgs;
 
-namespace mysqlchump
+namespace mysqlchump;
+
+class Program
 {
-	class Program
+	static async Task<int> Main(string[] args)
 	{
-		static async Task Main(string[] args)
-		{
-			var arguments = Arguments.Parse<MySqlChumpArguments>(args);
+		return await CreateRootCommand().InvokeAsync(args);
+	}
 
-			if (args.Length == 0 || arguments.Help)
+	private static RootCommand CreateRootCommand()
+	{
+		var rootCommand = new RootCommand("MySQLChump data transfer tool");
+
+		var tableOption = new Option<string[]>(new[] { "--table", "-t" }, "The table to be dumped. Can be specified multiple times, or passed '*' to dump all tables.");
+		var tablesOption = new Option<string[]>("--tables", "A comma-separated list of tables to dump.");
+		var connectionStringOption = new Option<string>("--connection-string", "A connection string to use to connect to the database. Not required if -s -d -u -p have been specified");
+		var serverOption = new Option<string>(new[] { "--server", "-s" }, () => "localhost", "The server to connect to. Defaults to localhost.");
+		var portOption = new Option<ushort>(new[] { "--port", "-o" }, () => 3306, "The port of the server to connect to. Defaults to 3306.");
+		var databaseOption = new Option<string>(new[] { "--database", "-d" }, "The database to use when dumping.");
+		var usernameOption = new Option<string>(new[] { "--username", "-u" }, "The username to connect with.");
+		var passwordOption = new Option<string>(new[] { "--password", "-p" }, "The password to connect with.");
+		var outputFormatOption = new Option<OutputFormatEnum>(new[] { "--output-format", "-f" }, () => OutputFormatEnum.mysql, "The output format to create when dumping.");
+		var selectOption = new Option<string>(new[] { "--select", "-q" }, () => "SELECT * FROM `{table}`", "The select query to use when filtering rows/columns. If not specified, will dump the entire table.\nTable being examined is specified with \"{table}\".");
+		var noCreationOption = new Option<bool>(new[] { "--no-creation" }, "Don't output table creation statements.");
+		var truncateOption = new Option<bool>(new[] { "--truncate" }, "Prepend data insertions with a TRUNCATE command.");
+		var appendOption = new Option<bool>(new[] { "--append" }, "If specified, will append to the specified file instead of overwriting.");
+		var outputFileArgument = new Argument<string>("output location", "Specify either a file or a folder to output to. '-' for stdout, otherwise defaults to creating files in the current directory") { Arity = ArgumentArity.ZeroOrOne };
+
+        var dumpCommand = new Command("export", "Exports data from a database")
+		{
+			tableOption, tablesOption, connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, outputFormatOption, selectOption, noCreationOption, truncateOption, appendOption, outputFileArgument
+		};
+
+        dumpCommand.SetHandler(async context =>
+		{
+			var result = context.ParseResult;
+
+			var tables = (result.GetValueForOption(tablesOption) ?? Array.Empty<string>()).Union(result.GetValueForOption(tableOption) ?? Array.Empty<string>()).ToArray();
+
+			if (tables.Length == 0)
 			{
-				Console.WriteLine("Usage:");
-				Console.WriteLine("mysqlchump --table <table> --connectionString <connection string> [--select <select sql statement>] [--format mysql|csv] [--append] (--stdout | <output file>)");
-				Console.WriteLine("mysqlchump --tables <comma separated table names> --connectionString <connection string> [--select <select sql statement>] [--format mysql|csv] [--stdout | <output folder>]");
+				Console.WriteLine("No tables specified, exiting");
+				context.ExitCode = 1;
 				return;
 			}
-			
-			string selectStatement = arguments.SelectQuery ?? "SELECT * FROM `{table}`";
 
-			if (!arguments.StdOut && arguments.Values.Count < 1)
-				throw new ArgumentException("Expecting argument: output file");
+			string connectionString = result.GetValueForOption(connectionStringOption);
 
-			if (arguments.Table == null && arguments.Tables == null)
-				throw new ArgumentException("Expecting argument: --table or --tables");
-
-			if (string.IsNullOrWhiteSpace(arguments.ConnectionString))
-				throw new ArgumentException("Expecting argument: --connectionString");
-
-			bool singleTableMode = arguments.Table != null;
-
-			try
+			if (string.IsNullOrWhiteSpace(connectionString))
 			{
-				if (singleTableMode)
-				{
-					await DumpSingleTable(arguments.Table, arguments.NoCreation, arguments.Truncate, arguments.Format, selectStatement,
-                        arguments.ConnectionString, arguments.Values[0], arguments.StdOut, arguments.Append);
-				}
-				else
-				{
-					string outputFolderPath = arguments.Values.Count > 0
-						? arguments.Values[0]
-						: Environment.CurrentDirectory;
+				var csBuilder = new MySqlConnectionStringBuilder();
+				csBuilder.Server = result.GetValueForOption(serverOption);
+				csBuilder.Port = result.GetValueForOption(portOption);
+				csBuilder.Database = result.GetValueForOption(databaseOption);
+				csBuilder.UserID = result.GetValueForOption(usernameOption);
+				csBuilder.Password = result.GetValueForOption(passwordOption);
 
-					await DumpMultipleTables(arguments.Tables, arguments.NoCreation, arguments.Truncate, arguments.Format, selectStatement,
-                        arguments.ConnectionString, outputFolderPath, arguments.StdOut);
-				}
-			}
-			catch (Exception ex)
-			{
-				var errorBuilder = new StringBuilder();
-				errorBuilder.AppendLine("Unrecoverable error");
-				errorBuilder.AppendLine(ex.ToStringDemystified());
-
-				if (arguments.StdOut)
-				{
-					var stderr = new StreamWriter(Console.OpenStandardError());
-					stderr.Write(errorBuilder.ToString());
-				}
-				else
-				{
-					Console.Write(errorBuilder.ToString());
-				}
-			}
-		}
-
-		static async Task DumpTableToStream(string table, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, MySqlConnection connection, Stream stream)
-		{
-			BaseDumper dumper = outputFormat switch
-			{
-				OutputFormatEnum.mysql => new MySqlDumper(connection),
-				OutputFormatEnum.postgres => new PostgresDumper(connection),
-				OutputFormatEnum.csv => new CsvDumper(connection),
-				_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
-			};
-
-			await dumper.WriteStartTableAsync(table, stream, !skipSchema, truncate);
-
-			await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
-			{
-				await dumper.WriteInsertQueries(table, selectStatement, stream, transaction);
+				connectionString = csBuilder.ToString();
 			}
 
-			await dumper.WriteEndTableAsync(table, stream);
-		}
+			var statusResult = await ExportMainAsync(tables, connectionString, result.GetValueForOption(outputFormatOption),
+				result.GetValueForOption(selectOption), result.GetValueForOption(noCreationOption), result.GetValueForOption(truncateOption),
+				result.GetValueForOption(appendOption), result.GetValueForArgument(outputFileArgument));
+		});
 
-		static async Task DumpSingleTable(string table, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFile, bool standardOut, bool append)
-		{
-			var stream = standardOut
-				? Console.OpenStandardOutput()
-				: new FileStream(outputFile, append ? FileMode.Append : FileMode.Create);
+		rootCommand.Add(dumpCommand);
 
-			string formattedQuery = selectStatement.Replace("{table}", table);
+		return rootCommand;
+	}
 
-			await using (var connection = new MySqlConnection(connectionString))
-			{
-				await connection.OpenAsync();
+	static async Task<int> ExportMainAsync(string[] tables, string connectionString, OutputFormatEnum outputFormat, string selectQuery, bool noCreation, bool truncate, bool append, string outputLocation)
+	{
+		bool stdout = outputLocation == "-";
+		string folder = Directory.Exists(outputLocation)
+			? outputLocation
+			: string.IsNullOrWhiteSpace(outputLocation) ? Directory.GetCurrentDirectory() : null;
+		bool folderMode = folder != null;
 
-                await BaseDumper.InitializeConnection(connection);
+		Stream currentStream = null;
 
-				await DumpTableToStream(table, skipSchema, truncate, outputFormat, formattedQuery, connection, stream);
-			}
-
-			await stream.FlushAsync();
-
-			if (!standardOut)
-				await stream.DisposeAsync();
-		}
-
-		private static async Task<string[]> GetAllTablesFromDatabase(MySqlConnection connection)
-		{
-			string databaseName = connection.Database;
-
-			const string commandText =
-				"SELECT TABLE_NAME " +
-				"FROM INFORMATION_SCHEMA.TABLES " +
-				"WHERE TABLE_SCHEMA = @databasename";
-
-			await using var createTableCommand = new MySqlCommand(commandText, connection)
-				.SetParam("@databasename", databaseName);
-
-			await using var reader = await createTableCommand.ExecuteReaderAsync();
-
-			List<string> tableList = new List<string>();
-
-			while (await reader.ReadAsync())
-				tableList.Add(reader.GetString(0));
-
-			return tableList.ToArray();
-		}
-
-		static async Task DumpMultipleTables(string multiTableArgument, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, string connectionString, string outputFolder, bool stdOut)
+		try
 		{
 			var dateTime = DateTime.Now;
 
@@ -145,91 +97,110 @@ namespace mysqlchump
 
 			await connection.OpenAsync();
 
-            await BaseDumper.InitializeConnection(connection);
+			await BaseDumper.InitializeConnection(connection);
 
-			string[] tables;
-
-			if (multiTableArgument == "*")
-			{
+			if (tables.Any(x => x == "*"))
 				tables = await GetAllTablesFromDatabase(connection);
+
+			if (stdout && folder == null)
+			{
+				currentStream = stdout
+					? Console.OpenStandardOutput()
+					: new FileStream(outputLocation, append ? FileMode.Append : FileMode.Create);
+			}
+
+            foreach (var table in tables)
+            {
+				if (folderMode)
+				{
+					currentStream = new FileStream(Path.Combine(folder, $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.sql"), FileMode.CreateNew);
+                }
+
+                string formattedQuery = selectQuery.Replace("{table}", table);
+
+                await DumpTableToStream(table, noCreation, truncate, outputFormat, formattedQuery, connection, currentStream);
+
+				await currentStream.WriteAsync(Encoding.ASCII.GetBytes("\n\n\n"));
+
+                if (folderMode)
+                {
+					await currentStream.DisposeAsync();
+                }
+            }
+
+			return 0;
+		}
+		catch (Exception ex)
+		{
+			var errorBuilder = new StringBuilder();
+			errorBuilder.AppendLine("Unrecoverable error");
+			errorBuilder.AppendLine(ex.ToStringDemystified());
+
+			if (stdout)
+			{
+				var stderr = new StreamWriter(Console.OpenStandardError());
+				stderr.Write(errorBuilder.ToString());
 			}
 			else
 			{
-				tables = multiTableArgument.Split(',', StringSplitOptions.RemoveEmptyEntries);
+				Console.Write(errorBuilder.ToString());
 			}
 
-            if (!stdOut)
-            {
-                foreach (var table in tables)
-                {
-                    string dumpFileName = $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.sql";
-
-                    await using (var stream = new FileStream(Path.Combine(outputFolder, dumpFileName), FileMode.CreateNew))
-                    {
-                        string formattedQuery = selectStatement.Replace("{table}", table);
-
-                        await DumpTableToStream(table, skipSchema, truncate, outputFormat, formattedQuery, connection, stream);
-                    }
-                }
-			}
-            else
-            {
-                var stream = Console.OpenStandardOutput();
-
-                using var streamWriter = new StreamWriter(stream, Utility.NoBomUtf8, 4096, true);
-
-                foreach (var table in tables)
-                {
-                    string formattedQuery = selectStatement.Replace("{table}", table);
-
-                    await DumpTableToStream(table, skipSchema, truncate, outputFormat, formattedQuery, connection, stream);
-
-                    await streamWriter.WriteAsync("\n\n\n");
-                    await streamWriter.FlushAsync();
-                }
-			}
+			return 1;
 		}
-
-		internal enum OutputFormatEnum
+		finally
 		{
-			mysql,
-			postgres,
-			csv
+			if (!stdout && currentStream != null)
+				currentStream.Dispose();
 		}
+	}
 
-		private class MySqlChumpArguments : IArgumentCollection
+	static async Task DumpTableToStream(string table, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, MySqlConnection connection, Stream stream)
+	{
+		BaseDumper dumper = outputFormat switch
 		{
-			public IList<string> Values { get; set; }
-			
-			[CommandDefinition("t", "table", Description = "Specify the table to be dumped.")]
-			public string Table { get; set; }
-			
-			[CommandDefinition(null, "tables", Description = "Specify the tables to be dumped, in a comma-delimited string.")]
-			public string Tables { get; set; }
+			OutputFormatEnum.mysql => new MySqlDumper(connection),
+			OutputFormatEnum.postgres => new PostgresDumper(connection),
+			OutputFormatEnum.csv => new CsvDumper(connection),
+			_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
+		};
 
-			[CommandDefinition("c", "connectionString", Description = "The connection string used to connect to the database.")]
-			public string ConnectionString { get; set; }
+		await dumper.WriteStartTableAsync(table, stream, !skipSchema, truncate);
 
-			[CommandDefinition("f", "format", Description = "The format to output when generating the dump.")]
-			public OutputFormatEnum Format { get; set; } = OutputFormatEnum.mysql;
-
-			[CommandDefinition("n", "no-creation", Description = "Don't output table creation statements")]
-			public bool NoCreation { get; set; }
-
-			[CommandDefinition("t", "truncate", Description = "Prepend data insertions with a TRUNCATE command.")]
-			public bool Truncate { get; set; }
-
-			[CommandDefinition("s", "select", Description = "The select query to use when filtering rows/columns. If not specified, will dump the entire table.\nCurrent table is specified with \"{table}\"")]
-			public string SelectQuery { get; set; }
-
-			[CommandDefinition(null, "append", Description = "If specified, will append to the specified file instead of overwriting")]
-			public bool Append { get; set; }
-
-			[CommandDefinition(null, "stdout", Description = "Pipe to stdout instead of writing to a file")]
-			public bool StdOut { get; set; }
-
-			[CommandDefinition("h", "help", Description = "Display this help message")]
-			public bool Help { get; set; }
+		await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
+		{
+			await dumper.WriteInsertQueries(table, selectStatement, stream, transaction);
 		}
+
+		await dumper.WriteEndTableAsync(table, stream);
+	}
+
+	private static async Task<string[]> GetAllTablesFromDatabase(MySqlConnection connection)
+	{
+		string databaseName = connection.Database;
+
+		const string commandText =
+			"SELECT TABLE_NAME " +
+			"FROM INFORMATION_SCHEMA.TABLES " +
+			"WHERE TABLE_SCHEMA = @databasename";
+
+		await using var createTableCommand = new MySqlCommand(commandText, connection)
+			.SetParam("@databasename", databaseName);
+
+		await using var reader = await createTableCommand.ExecuteReaderAsync();
+
+		List<string> tableList = new List<string>();
+
+		while (await reader.ReadAsync())
+			tableList.Add(reader.GetString(0));
+
+		return tableList.ToArray();
+	}
+
+	internal enum OutputFormatEnum
+	{
+		mysql,
+		postgres,
+		csv
 	}
 }
