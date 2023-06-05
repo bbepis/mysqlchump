@@ -38,12 +38,12 @@ class Program
 		var appendOption = new Option<bool>(new[] { "--append" }, "If specified, will append to the specified file instead of overwriting.");
 		var outputFileArgument = new Argument<string>("output location", "Specify either a file or a folder to output to. '-' for stdout, otherwise defaults to creating files in the current directory") { Arity = ArgumentArity.ZeroOrOne };
 
-        var dumpCommand = new Command("export", "Exports data from a database")
+        var exportCommand = new Command("export", "Exports data from a database")
 		{
 			tableOption, tablesOption, connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, outputFormatOption, selectOption, noCreationOption, truncateOption, appendOption, outputFileArgument
 		};
 
-        dumpCommand.SetHandler(async context =>
+        exportCommand.SetHandler(async context =>
 		{
 			var result = context.ParseResult;
 
@@ -70,7 +70,7 @@ class Program
 				connectionString = csBuilder.ToString();
 			}
 
-			var statusResult = await ExportMainAsync(tables, connectionString, result.GetValueForOption(outputFormatOption),
+            context.ExitCode = await ExportMainAsync(tables, connectionString, result.GetValueForOption(outputFormatOption),
 				result.GetValueForOption(selectOption), result.GetValueForOption(noCreationOption), result.GetValueForOption(truncateOption),
 				result.GetValueForOption(appendOption), result.GetValueForArgument(outputFileArgument));
 		});
