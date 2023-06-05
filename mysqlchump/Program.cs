@@ -21,7 +21,7 @@ class Program
 
 	private static RootCommand CreateRootCommand()
 	{
-		var rootCommand = new RootCommand("MySQLChump data transfer tool");
+		var rootCommand = new RootCommand("MySQLChump data transfer tool v1.2");
 
 		var tableOption = new Option<string[]>(new[] { "--table", "-t" }, "The table to be dumped. Can be specified multiple times, or passed '*' to dump all tables.");
 		var tablesOption = new Option<string[]>("--tables", "A comma-separated list of tables to dump.");
