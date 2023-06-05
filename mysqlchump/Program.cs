@@ -197,14 +197,16 @@ class Program
 
 		try
 		{
-			await using var connection = new MySqlConnection(connectionString);
+            var createConnection = () => new MySqlConnection(connectionString);
 
+			await using (var connection = createConnection())
+			{
+                // test connection string
 			await connection.OpenAsync();
-
-			await BaseDumper.InitializeConnection(connection);
+            }
 
             var importer = new MysqlBatchImporter();
-            await importer.ImportAsync(currentStream, connection);
+            await importer.ImportAsync(currentStream, createConnection);
 
 			return 0;
 		}

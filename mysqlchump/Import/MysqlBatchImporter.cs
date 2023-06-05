@@ -1,49 +1,68 @@
 ﻿using System;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using MySqlConnector;
+using Nito.AsyncEx;
 
 namespace mysqlchump.Import;
 
 internal class MysqlBatchImporter
 {
-    public async Task ImportAsync(Stream dataStream, MySqlConnection connection)
+    public async Task ImportAsync(Stream dataStream, Func<MySqlConnection> createConnection)
     {
         using var reader = new StreamReader(dataStream);
 
-        Task<string> getNext() => Task.Run(() => GetNextInsertBatch(reader));
+        const int concurrentLimit = 16;
 
-        Task sendCommand(string commandText)
+        var queue = new AsyncProducerConsumerQueue<string>(concurrentLimit);
+        var commitSemaphore = new AsyncSemaphore(1);
+
+        var enqueueTask = Task.Run(async () =>
         {
-            using var command = connection.CreateCommand();
+            while (true)
+            {
+                var result = GetNextInsertBatch(reader);
 
-            command.CommandText = commandText;
+                if (result == null)
+                    break;
 
-            return command.ExecuteNonQueryAsync();
-        }
+                await queue.EnqueueAsync(result);
+            }
 
-        await sendCommand("SET autocommit=0; SET UNIQUE_CHECKS=0; SET sql_log_bin=OFF; ALTER INSTANCE DISABLE INNODB REDO_LOG; START TRANSACTION;");
+            queue.CompleteAdding();
+        });
 
-        var currentBatch = await getNext();
-        
-
-        while (true)
+        var sendTasks = Enumerable.Range(0, concurrentLimit).Select(async _ =>
         {
-            var nextBatchTask = getNext();
+            await using var connection = createConnection();
+            connection.Open();
 
-            if (currentBatch != null)
-                await sendCommand(currentBatch);
+            Task sendCommand(string commandText)
+            {
+                using var command = connection.CreateCommand();
 
-            var nextBatch = await nextBatchTask;
+                command.CommandTimeout = 9999999;
+                command.CommandText = commandText;
 
-            if (nextBatch == null)
-                break;
+                return command.ExecuteNonQueryAsync();
+            }
 
-            currentBatch = nextBatch;
-        }
+            await sendCommand("SET SESSION time_zone = \"+00:00\"; SET autocommit=0; SET UNIQUE_CHECKS=0; SET sql_log_bin=OFF; START TRANSACTION;");
 
-        await sendCommand("COMMIT; SET UNIQUE_CHECKS=1; ALTER INSTANCE ENABLE INNODB REDO_LOG;");
+            while (await queue.OutputAvailableAsync())
+            {
+                var commandText = await queue.DequeueAsync();
+
+                await sendCommand(commandText);
+            }
+
+            using (var @lock = await commitSemaphore.LockAsync())
+                await sendCommand("COMMIT; SET UNIQUE_CHECKS=1;");
+        }).ToArray();
+
+        await Task.WhenAll(sendTasks.Append(enqueueTask));
     }
 
     private string GetNextInsertBatch(StreamReader reader)
@@ -54,12 +73,10 @@ internal class MysqlBatchImporter
 
         while (true)
         {
-            if (builder.Length >= 16000)
+            if (builder.Length >= 1600000)
                 break;
 
             var line = reader.ReadLine();
-
-            //Console.WriteLine($"[{line}]");
 
             if (line == null)
                 break;
@@ -84,16 +101,12 @@ internal class MysqlBatchImporter
                 builder.Append(',');
                 builder.Append(line, posOffset, length);
             }
-
-            //Console.WriteLine(builder.Length);
         }
 
         if (builder.Length == 0)
             return null;
 
         builder.Append(';');
-
-        //Console.WriteLine(builder.Length);
 
         return builder.ToString();
     }
