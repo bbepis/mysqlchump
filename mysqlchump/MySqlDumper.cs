@@ -40,6 +40,7 @@ namespace mysqlchump
 			
 			await writer.WriteAsync("SET SESSION time_zone = \"+00:00\";\n");
 			await writer.WriteAsync("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
+			await writer.WriteAsync("SET SESSION UNIQUE_KEY_CHECKS = 0;\n");
 
 			await writer.WriteAsync("ALTER INSTANCE DISABLE INNODB REDO_LOG;\n\n");
 
