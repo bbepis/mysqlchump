@@ -6,7 +6,7 @@ using System.Text;
 using System.Threading.Tasks;
 using MySqlConnector;
 
-namespace mysqlchump
+namespace mysqlchump.Export
 {
 	public class MySqlDumper : BaseDumper
 	{

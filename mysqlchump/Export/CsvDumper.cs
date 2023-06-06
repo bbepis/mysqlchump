@@ -4,7 +4,7 @@ using System.Data.SqlTypes;
 using System.Text;
 using MySqlConnector;
 
-namespace mysqlchump
+namespace mysqlchump.Export
 {
 	public class CsvDumper : BaseDumper
 	{

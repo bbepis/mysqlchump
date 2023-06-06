@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using mysqlchump.Export;
 using mysqlchump.Import;
 using MySqlConnector;
 
