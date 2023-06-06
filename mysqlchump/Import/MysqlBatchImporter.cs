@@ -16,7 +16,7 @@ internal class MysqlBatchImporter
 
         const int concurrentLimit = 16;
 
-        var queue = new AsyncProducerConsumerQueue<string>(concurrentLimit);
+        var queue = new AsyncProducerConsumerQueue<string>(4);
         var commitSemaphore = new AsyncSemaphore(1);
 
         var enqueueTask = Task.Run(async () =>
@@ -65,15 +65,17 @@ internal class MysqlBatchImporter
         await Task.WhenAll(sendTasks.Append(enqueueTask));
     }
 
+    private StringBuilder queryBuilder = new StringBuilder(2_000_000);
+
     private string GetNextInsertBatch(StreamReader reader)
     {
-        var builder = new StringBuilder();
-
         bool initialInsert = false;
+
+        queryBuilder.Clear();
 
         while (true)
         {
-            if (builder.Length >= 1600000)
+            if (queryBuilder.Length >= 1600000)
                 break;
 
             var line = reader.ReadLine();
@@ -86,7 +88,7 @@ internal class MysqlBatchImporter
 
             if (!initialInsert)
             {
-                builder.Append(line.TrimEnd(';'));
+                queryBuilder.Append(line.TrimEnd(';'));
                 initialInsert = true;
             }
             else
@@ -98,16 +100,16 @@ internal class MysqlBatchImporter
 
                 int length = (line.Length - posOffset) + lengthOffset;
 
-                builder.Append(',');
-                builder.Append(line, posOffset, length);
+                queryBuilder.Append(',');
+                queryBuilder.Append(line, posOffset, length);
             }
         }
 
-        if (builder.Length == 0)
+        if (queryBuilder.Length == 0)
             return null;
 
-        builder.Append(';');
+        queryBuilder.Append(';');
 
-        return builder.ToString();
+        return queryBuilder.ToString();
     }
 }
