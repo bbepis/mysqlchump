@@ -10,8 +10,16 @@ namespace mysqlchump.Export
 	{
 		public CsvDumper(MySqlConnection connection) : base(connection) { }
 
+        private bool HasWrittenSchema = false;
+
 		protected override void CreateInsertLine(DbDataReader reader, StringBuilder builder)
 		{
+            if (!HasWrittenSchema)
+            {
+				WriteSchemaLine(builder);
+				HasWrittenSchema = true;
+            }
+
 			bool rowStart = true;
 			foreach (var column in Columns)
 			{
@@ -22,7 +30,24 @@ namespace mysqlchump.Export
 					? mysqlReader.GetMySqlDecimal(column.ColumnName)
 					: reader[column.ColumnName];
 
-				StringToCsvCell(GetSlimlinedMySqlStringRepresentation(column, value), builder);
+				StringToCsvCell(GetCsvMySqlStringRepresentation(column, value), builder);
+
+				rowStart = false;
+			}
+
+			builder.AppendLine();
+		}
+		
+        private void WriteSchemaLine(StringBuilder builder)
+        {
+            bool rowStart = true;
+
+            foreach (var column in Columns)
+            {
+                if (!rowStart)
+                    builder.Append(",");
+
+                StringToCsvCell(column.ColumnName, builder);
 
 				rowStart = false;
 			}
@@ -50,7 +75,7 @@ namespace mysqlchump.Export
 			}
 		}
 
-		private static string GetSlimlinedMySqlStringRepresentation(DbColumn column, object value)
+		private static string GetCsvMySqlStringRepresentation(DbColumn column, object value)
 		{
 			if (value == null || value == DBNull.Value)
 				return "\\N";
