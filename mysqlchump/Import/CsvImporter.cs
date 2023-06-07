@@ -83,13 +83,13 @@ internal class CsvImporter
 
         if (printProgress)
             _ = Task.Run(async () =>
-        {
-            while (!cts.IsCancellationRequested)
             {
-                writeProgress();
-                await Task.Delay(1000);
-            }
-        });
+                while (!cts.IsCancellationRequested)
+                {
+                    writeProgress();
+                    await Task.Delay(1000);
+                }
+            });
 
         var enqueueTask = Task.Run(async () =>
         {
@@ -183,7 +183,7 @@ internal class CsvImporter
         {
             if (!csvReader.Read())
                 break;
-
+            
             queryBuilder.Append(needsComma ? ",(" : "(");
             needsComma = true;
 
