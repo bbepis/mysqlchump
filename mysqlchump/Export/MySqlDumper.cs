@@ -44,47 +44,47 @@ namespace mysqlchump.Export
 
 			await writer.WriteAsync("ALTER INSTANCE DISABLE INNODB REDO_LOG;\n\n");
 
-            if (truncate)
-                await writer.WriteAsync($"TRUNCATE `{table}`;\n");
+			if (truncate)
+				await writer.WriteAsync($"TRUNCATE `{table}`;\n");
 
-            await writer.WriteAsync("SET autocommit=0;\n");
+			await writer.WriteAsync("SET autocommit=0;\n");
 			await writer.WriteAsync("START TRANSACTION;\n");
 
 			await writer.WriteAsync("\n");
 		}
 
-        public override async Task WriteEndTableAsync(string table, Stream outputStream)
-        {
-            await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
+		public override async Task WriteEndTableAsync(string table, Stream outputStream)
+		{
+			await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
 			
-            await writer.WriteAsync("COMMIT;\n");
-            await writer.WriteAsync("ALTER INSTANCE ENABLE INNODB REDO_LOG;\n\n\n");
+			await writer.WriteAsync("COMMIT;\n");
+			await writer.WriteAsync("ALTER INSTANCE ENABLE INNODB REDO_LOG;\n\n\n");
 		}
 
-        private async Task<ulong?> GetAutoIncrementValue(string table, MySqlTransaction transaction = null)
-        {
-            string databaseName = Connection.Database;
+		private async Task<ulong?> GetAutoIncrementValue(string table, MySqlTransaction transaction = null)
+		{
+			string databaseName = Connection.Database;
 
-            const string commandText =
-                "SELECT AUTO_INCREMENT " +
-                "FROM INFORMATION_SCHEMA.TABLES " +
-                "WHERE TABLE_SCHEMA = @databasename AND TABLE_NAME = @tablename";
+			const string commandText =
+				"SELECT AUTO_INCREMENT " +
+				"FROM INFORMATION_SCHEMA.TABLES " +
+				"WHERE TABLE_SCHEMA = @databasename AND TABLE_NAME = @tablename";
 
-            await using var createTableCommand = new MySqlCommand(commandText, Connection, transaction)
-                .SetParam("@databasename", databaseName)
-                .SetParam("@tablename", table);
+			await using var createTableCommand = new MySqlCommand(commandText, Connection, transaction)
+				.SetParam("@databasename", databaseName)
+				.SetParam("@tablename", table);
 
 
-            var result = await createTableCommand.ExecuteScalarAsync();
+			var result = await createTableCommand.ExecuteScalarAsync();
 
-            if (result == DBNull.Value)
-                return null;
+			if (result == DBNull.Value)
+				return null;
 
 			return Convert.ToUInt64(result);
-        }
+		}
 
-        protected override void StartInsertBatch(string table, DbDataReader reader, StringBuilder builder)
-        {
+		protected override void StartInsertBatch(string table, DbDataReader reader, StringBuilder builder)
+		{
 			builder.AppendLine($"INSERT INTO `{table}` ({string.Join(", ", Columns.Select(column => $"`{column.ColumnName}`"))}) VALUES");
 		}
 

@@ -8,8 +8,8 @@ using MySqlConnector;
 namespace mysqlchump
 {
 	public static class Utility
-    {
-        public static UTF8Encoding NoBomUtf8 { get; } = new UTF8Encoding(false);
+	{
+		public static UTF8Encoding NoBomUtf8 { get; } = new UTF8Encoding(false);
 
 		public static bool TryFirst<T>(this IEnumerable<T> enumerable, Func<T, bool> predicate, out T value)
 		{
@@ -36,11 +36,11 @@ namespace mysqlchump
 			return command;
 		}
 
-        public static async Task WriteToStreamAsync(this Stream stream, string text)
-        {
-            await using var writer = new StreamWriter(stream, Utility.NoBomUtf8, 4096, true);
+		public static async Task WriteToStreamAsync(this Stream stream, string text)
+		{
+			await using var writer = new StreamWriter(stream, Utility.NoBomUtf8, 4096, true);
 
 			await writer.WriteAsync(text);
-        }
+		}
 	}
 }

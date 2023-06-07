@@ -34,15 +34,15 @@ namespace mysqlchump.Export
 
 		protected virtual void WriteInsertContinuation(StringBuilder builder) { }
 
-        public static async Task InitializeConnection(MySqlConnection connection)
-        {
+		public static async Task InitializeConnection(MySqlConnection connection)
+		{
 			// Set the session timezone to UTC so that we get consistent UTC timestamps
 
-            using (var command = new MySqlCommand(@"SET SESSION time_zone = ""+00:00"";", connection))
-            {
-                await command.ExecuteNonQueryAsync();
-            }
-        }
+			using (var command = new MySqlCommand(@"SET SESSION time_zone = ""+00:00"";", connection))
+			{
+				await command.ExecuteNonQueryAsync();
+			}
+		}
 
 		public async Task WriteInsertQueries(string table, string query, Stream outputStream, MySqlTransaction transaction = null)
 		{
@@ -99,7 +99,7 @@ namespace mysqlchump.Export
 					percentage = 100;
 				}
 
-                Console.Error.Write($"{table} - {currentRow:N0} / {(rowCount.HasValue ? $"~{rowCount:N0}" : "?")} ({(rowCount.HasValue ? percentage.ToString("N2") : "?")} %)");
+				Console.Error.Write($"{table} - {currentRow:N0} / {(rowCount.HasValue ? $"~{rowCount:N0}" : "?")} ({(rowCount.HasValue ? percentage.ToString("N2") : "?")} %)");
 			}
 
 			bool start = true;
@@ -205,11 +205,11 @@ namespace mysqlchump.Export
 				return ((MySqlDecimal)value).ToString();
 			}
 
-            if (columnType == typeof(DateTime))
-            {
-                var dtValue = (DateTime)value;
-                return $"'{dtValue:yyyy-MM-dd HH:mm:ss}'";
-            }
+			if (columnType == typeof(DateTime))
+			{
+				var dtValue = (DateTime)value;
+				return $"'{dtValue:yyyy-MM-dd HH:mm:ss}'";
+			}
 
 			if (columnType == typeof(bool))
 				return (bool)value ? "1" : "0";

@@ -10,15 +10,15 @@ namespace mysqlchump.Export
 	{
 		public CsvDumper(MySqlConnection connection) : base(connection) { }
 
-        private bool HasWrittenSchema = false;
+		private bool HasWrittenSchema = false;
 
 		protected override void CreateInsertLine(DbDataReader reader, StringBuilder builder)
 		{
-            if (!HasWrittenSchema)
-            {
+			if (!HasWrittenSchema)
+			{
 				WriteSchemaLine(builder);
 				HasWrittenSchema = true;
-            }
+			}
 
 			bool rowStart = true;
 			foreach (var column in Columns)
@@ -38,16 +38,16 @@ namespace mysqlchump.Export
 			builder.AppendLine();
 		}
 		
-        private void WriteSchemaLine(StringBuilder builder)
-        {
-            bool rowStart = true;
+		private void WriteSchemaLine(StringBuilder builder)
+		{
+			bool rowStart = true;
 
-            foreach (var column in Columns)
-            {
-                if (!rowStart)
-                    builder.Append(",");
+			foreach (var column in Columns)
+			{
+				if (!rowStart)
+					builder.Append(",");
 
-                StringToCsvCell(column.ColumnName, builder);
+				StringToCsvCell(column.ColumnName, builder);
 
 				rowStart = false;
 			}
@@ -88,16 +88,16 @@ namespace mysqlchump.Export
 			}
 
 			if (columnType == typeof(byte)
-			    || columnType == typeof(sbyte)
-			    || columnType == typeof(ushort)
-			    || columnType == typeof(short)
-			    || columnType == typeof(uint)
-			    || columnType == typeof(int)
-			    || columnType == typeof(ulong)
-			    || columnType == typeof(long)
-			    || columnType == typeof(float)
-			    || columnType == typeof(double)
-			    || columnType == typeof(decimal))
+				|| columnType == typeof(sbyte)
+				|| columnType == typeof(ushort)
+				|| columnType == typeof(short)
+				|| columnType == typeof(uint)
+				|| columnType == typeof(int)
+				|| columnType == typeof(ulong)
+				|| columnType == typeof(long)
+				|| columnType == typeof(float)
+				|| columnType == typeof(double)
+				|| columnType == typeof(decimal))
 			{
 				return value.ToString();
 			}
@@ -105,13 +105,13 @@ namespace mysqlchump.Export
 			if (columnType == typeof(bool))
 				return (bool)value ? "1" : "0";
 
-            if (columnType == typeof(DateTime))
-            {
-                var dtValue = (DateTime)value;
-                return dtValue.ToString("yyyy-MM-dd HH:mm:ss");
-            }
+			if (columnType == typeof(DateTime))
+			{
+				var dtValue = (DateTime)value;
+				return dtValue.ToString("yyyy-MM-dd HH:mm:ss");
+			}
 
-            throw new SqlTypeException($"Could not represent type: {column.DataTypeName} ({columnType?.FullName ?? "<NULL>"})");
+			throw new SqlTypeException($"Could not represent type: {column.DataTypeName} ({columnType?.FullName ?? "<NULL>"})");
 		}
 	}
 }
