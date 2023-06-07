@@ -129,6 +129,8 @@ internal class CsvImporter
                 return command.ExecuteNonQueryAsync();
             }
 
+            string commandText = null;
+
             try
             {
                 using (var @lock = await transactionSemaphore.LockAsync())
@@ -136,16 +138,21 @@ internal class CsvImporter
                 
                 while (await queue.OutputAvailableAsync())
                 {
-                    var commandText = await queue.DequeueAsync();
+                    commandText = await queue.DequeueAsync();
 
                     await sendCommand(commandText);
                 }
+
+                commandText = null;
 
                 using (var @lock = await transactionSemaphore.LockAsync())
                     await sendCommand("COMMIT; SET UNIQUE_CHECKS=1;");
             }
             catch (Exception ex)
             {
+                if (commandText != null)
+                    Console.Error.WriteLine(commandText);
+
                 Console.Error.WriteLine(ex);
             }
         }).ToArray();
