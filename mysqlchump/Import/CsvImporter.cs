@@ -79,7 +79,10 @@ internal class CsvImporter
 
         var cts = new CancellationTokenSource();
 
-        var timerTask = Task.Run(async () =>
+        bool printProgress = !Console.IsErrorRedirected;
+
+        if (printProgress)
+            _ = Task.Run(async () =>
         {
             while (!cts.IsCancellationRequested)
             {
@@ -160,6 +163,8 @@ internal class CsvImporter
         await Task.WhenAll(sendTasks.Append(enqueueTask));
 
         cts.Cancel();
+        if (printProgress)
+            Console.Error.WriteLine();
     }
 
     private StringBuilder queryBuilder = new StringBuilder(1_000_000);
