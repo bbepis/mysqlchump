@@ -149,6 +149,14 @@ class Program
 
 		Stream currentStream = null;
 
+        string extension = outputFormat switch
+        {
+            OutputFormatEnum.mysql => "sql",
+            OutputFormatEnum.postgres => "sql",
+            OutputFormatEnum.csv => "csv",
+            _ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
+        };
+
 		try
 		{
 			var dateTime = DateTime.Now;
@@ -173,7 +181,7 @@ class Program
             {
 				if (folderMode)
 				{
-					currentStream = new FileStream(Path.Combine(folder, $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.sql"), FileMode.CreateNew);
+					currentStream = new FileStream(Path.Combine(folder, $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.{extension}"), FileMode.CreateNew);
                 }
 
                 string formattedQuery = selectQuery.Replace("{table}", table);
