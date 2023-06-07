@@ -186,7 +186,7 @@ internal class CsvImporter
                 {
                     queryBuilder.Append("NULL");
                 }
-                else if (columnTypes[i] == typeof(string))
+                else if (columnTypes[i] == typeof(string) || columnTypes[i] == typeof(DateTime))
                 {
                     queryBuilder.Append('\'');
                     queryBuilder.Append(rawValue.Replace("'", "''"));
