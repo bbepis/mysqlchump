@@ -105,7 +105,13 @@ namespace mysqlchump.Export
 			if (columnType == typeof(bool))
 				return (bool)value ? "1" : "0";
 
-			throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
+            if (columnType == typeof(DateTime))
+            {
+                var dtValue = (DateTime)value;
+                return dtValue.ToString("yyyy-MM-dd HH:mm:ss");
+            }
+
+            throw new SqlTypeException($"Could not represent type: {column.DataTypeName} ({columnType?.FullName ?? "<NULL>"})");
 		}
 	}
 }
