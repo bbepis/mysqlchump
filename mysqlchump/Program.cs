@@ -180,8 +180,6 @@ class Program
 
                 await DumpTableToStream(table, noCreation, truncate, outputFormat, formattedQuery, connection, currentStream);
 
-				await currentStream.WriteAsync(Encoding.ASCII.GetBytes("\n\n\n"));
-
                 if (folderMode)
                 {
 					await currentStream.DisposeAsync();

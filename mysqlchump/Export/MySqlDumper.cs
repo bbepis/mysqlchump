@@ -58,7 +58,7 @@ namespace mysqlchump.Export
             await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
 			
             await writer.WriteAsync("COMMIT;\n");
-            await writer.WriteAsync("ALTER INSTANCE ENABLE INNODB REDO_LOG;\n\n");
+            await writer.WriteAsync("ALTER INSTANCE ENABLE INNODB REDO_LOG;\n\n\n");
 		}
 
         private async Task<ulong?> GetAutoIncrementValue(string table, MySqlTransaction transaction = null)
