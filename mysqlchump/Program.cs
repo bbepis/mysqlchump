@@ -25,7 +25,7 @@ class Program
 		var rootCommand = new RootCommand("MySQLChump data transfer tool v1.2");
 
 		var tableOption = new Option<string[]>(new[] { "--table", "-t" }, "The table to be dumped. Can be specified multiple times, or passed '*' to dump all tables.");
-		var tablesOption = new Option<string[]>("--tables", "A comma-separated list of tables to dump.");
+		var tablesOption = new Option<string>("--tables", "A comma-separated list of tables to dump.");
 		var connectionStringOption = new Option<string>("--connection-string", "A connection string to use to connect to the database. Not required if -s -d -u -p have been specified");
 		var serverOption = new Option<string>(new[] { "--server", "-s" }, () => "localhost", "The server to connect to.");
 		var portOption = new Option<ushort>(new[] { "--port", "-o" }, () => 3306, "The port of the server to connect to.");
@@ -48,7 +48,8 @@ class Program
 		{
 			var result = context.ParseResult;
 
-			var tables = (result.GetValueForOption(tablesOption) ?? Array.Empty<string>()).Union(result.GetValueForOption(tableOption) ?? Array.Empty<string>()).ToArray();
+			var tables = (result.GetValueForOption(tablesOption)?.Split(',') ?? Array.Empty<string>()).Select(x => x.Trim())
+                .Union(result.GetValueForOption(tableOption) ?? Array.Empty<string>()).ToArray();
 
 			if (tables.Length == 0)
 			{
