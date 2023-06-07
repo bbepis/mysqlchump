@@ -13,7 +13,7 @@ namespace mysqlchump.Import;
 
 internal class CsvImporter
 {
-    public async Task ImportAsync(Stream dataStream, string table, string[] columns, bool fixInvalidCsv, bool useHeaders, Func<MySqlConnection> createConnection)
+    public async Task ImportAsync(Stream dataStream, string table, string[] columns, bool fixInvalidCsv, bool useHeaders, bool insertIgnore, Func<MySqlConnection> createConnection)
     {
         using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
 
@@ -94,7 +94,7 @@ internal class CsvImporter
             {
                 while (true)
                 {
-                    var (canContinue, insertQuery) = GetNextInsertBatch(csvReader, table, columns, columnTypes);
+                    var (canContinue, insertQuery) = GetNextInsertBatch(csvReader, table, columns, columnTypes, insertIgnore);
 
                     if (insertQuery == null)
                         break;
@@ -157,13 +157,13 @@ internal class CsvImporter
 
     private StringBuilder queryBuilder = new StringBuilder(1_000_000);
 
-    private (bool canContinue, string insertQuery) GetNextInsertBatch(CsvDataReader csvReader, string table, string[] columnNames, Type[] columnTypes)
+    private (bool canContinue, string insertQuery) GetNextInsertBatch(CsvDataReader csvReader, string table, string[] columnNames, Type[] columnTypes, bool insertIgnore)
     {
         const int insertLimit = 4000;
         int count = 0;
 
         queryBuilder.Clear();
-        queryBuilder.Append($"INSERT INTO `{table}` ({string.Join(',', columnNames)}) VALUES ");
+        queryBuilder.Append($"INSERT{(insertIgnore ? " IGNORE" : "")} INTO `{table}` ({string.Join(',', columnNames)}) VALUES ");
 
         bool needsComma = false;
 
