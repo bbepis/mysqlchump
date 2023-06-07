@@ -18,7 +18,7 @@ internal class CsvImporter
         using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
 
         var csvReader = await CsvDataReader.CreateAsync(fixInvalidCsv ? new MysqlInvalidCsvReader(reader) : reader, 
-            new CsvDataReaderOptions { BufferSize = 128000, HasHeaders = useHeaders });
+            new CsvDataReaderOptions { BufferSize = 128000, HasHeaders = useHeaders, ResultSetMode = ResultSetMode.MultiResult });
 
         if (useHeaders)
         {
