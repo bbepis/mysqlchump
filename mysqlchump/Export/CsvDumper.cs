@@ -6,9 +6,11 @@ using MySqlConnector;
 
 namespace mysqlchump.Export
 {
-	public class CsvDumper : BaseDumper
+	public class CsvDumper : BaseTextDumper
 	{
 		public CsvDumper(MySqlConnection connection) : base(connection) { }
+
+		public override bool CompatibleWithMultiTableStdout => false;
 
 		private bool HasWrittenSchema = false;
 
@@ -54,7 +56,7 @@ namespace mysqlchump.Export
 
 			builder.AppendLine();
 		}
-
+		
 		// https://stackoverflow.com/a/6377656
 		private static void StringToCsvCell(string str, StringBuilder builder)
 		{

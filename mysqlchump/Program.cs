@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.CommandLine;
 using System.Data;
@@ -22,7 +22,7 @@ class Program
 
 	private static RootCommand CreateRootCommand()
 	{
-		var rootCommand = new RootCommand("MySQLChump data transfer tool v1.2");
+		var rootCommand = new RootCommand("MySQLChump data transfer tool v1.3");
 
 		var tableOption = new Option<string[]>(new[] { "--table", "-t" }, "The table to be dumped. Can be specified multiple times, or passed '*' to dump all tables.");
 		var tablesOption = new Option<string>("--tables", "A comma-separated list of tables to dump.");
@@ -158,6 +158,7 @@ class Program
 			OutputFormatEnum.mysql => "sql",
 			OutputFormatEnum.postgres => "sql",
 			OutputFormatEnum.csv => "csv",
+			OutputFormatEnum.json => "json",
 			_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
 		};
 
@@ -167,6 +168,20 @@ class Program
 
 			await using var connection = new MySqlConnection(connectionString);
 
+			BaseDumper createDumper() => outputFormat switch
+			{
+				OutputFormatEnum.mysql => new MySqlDumper(connection),
+				OutputFormatEnum.postgres => new PostgresDumper(connection),
+				OutputFormatEnum.csv => new CsvDumper(connection),
+				OutputFormatEnum.json => new JsonDumper(connection),
+				_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
+			};
+
+			BaseDumper dumper = createDumper();
+
+			if (tables.Length > 1 && !folderMode && !dumper.CompatibleWithMultiTableStdout)
+				throw new Exception("Selected dump format does not support multiple tables per file/stream");
+
 			await connection.OpenAsync();
 
 			await BaseDumper.InitializeConnection(connection);
@@ -174,23 +189,34 @@ class Program
 			if (tables.Any(x => x == "*"))
 				tables = await GetAllTablesFromDatabase(connection);
 
-			if (stdout && folder == null)
+			if (stdout || folder == null)
 			{
 				currentStream = stdout
 					? Console.OpenStandardOutput()
-					: new FileStream(outputLocation, append ? FileMode.Append : FileMode.Create);
+					: new FileStream(outputLocation, append ? FileMode.Append : FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1024 * 1024);
 			}
 
-			foreach (var table in tables)
+			for (var i = 0; i < tables.Length; i++)
 			{
+				var table = tables[i];
+				
 				if (folderMode)
 				{
-					currentStream = new FileStream(Path.Combine(folder, $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.{extension}"), FileMode.CreateNew);
+					currentStream =
+						new FileStream(Path.Combine(folder, $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.{extension}"),
+							FileMode.CreateNew);
 				}
 
 				string formattedQuery = selectQuery.Replace("{table}", table);
 
-				await DumpTableToStream(table, noCreation, truncate, outputFormat, formattedQuery, connection, currentStream);
+				await dumper.WriteStartTableAsync(table, currentStream, !noCreation, truncate);
+
+				await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
+				{
+					await dumper.WriteInsertQueries(table, formattedQuery, currentStream, transaction);
+				}
+
+				await dumper.WriteEndTableAsync(table, currentStream, !folderMode && (i + 1) < tables.Length);
 
 				if (folderMode)
 				{
@@ -253,6 +279,11 @@ class Program
 				var importer = new CsvImporter();
 				await importer.ImportAsync(currentStream, table, csvColumns, csvFixInvalidMysql, csvUseHeaders, insertIgnore, createConnection);
 			}
+			else if (inputFormat == InputFormatEnum.json)
+			{
+				var importer = new JsonImporter();
+				await importer.ImportAsync(currentStream, insertIgnore, createConnection);
+			}
 
 			return 0;
 		}
@@ -271,26 +302,6 @@ class Program
 			if (!stdin)
 				await currentStream.DisposeAsync();
 		}
-	}
-
-	static async Task DumpTableToStream(string table, bool skipSchema, bool truncate, OutputFormatEnum outputFormat, string selectStatement, MySqlConnection connection, Stream stream)
-	{
-		BaseDumper dumper = outputFormat switch
-		{
-			OutputFormatEnum.mysql => new MySqlDumper(connection),
-			OutputFormatEnum.postgres => new PostgresDumper(connection),
-			OutputFormatEnum.csv => new CsvDumper(connection),
-			_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
-		};
-
-		await dumper.WriteStartTableAsync(table, stream, !skipSchema, truncate);
-
-		await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
-		{
-			await dumper.WriteInsertQueries(table, selectStatement, stream, transaction);
-		}
-
-		await dumper.WriteEndTableAsync(table, stream);
 	}
 
 	private static async Task<string[]> GetAllTablesFromDatabase(MySqlConnection connection)
@@ -319,12 +330,14 @@ class Program
 	{
 		mysql,
 		postgres,
-		csv
+		csv,
+		json
 	}
 
 	internal enum InputFormatEnum
 	{
 		mysqlForceBatch,
-		csv
+		csv,
+		json
 	}
 }

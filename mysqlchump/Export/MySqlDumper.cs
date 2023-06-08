@@ -1,5 +1,6 @@
-﻿using System;
+using System;
 using System.Data.Common;
+using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -8,9 +9,11 @@ using MySqlConnector;
 
 namespace mysqlchump.Export
 {
-	public class MySqlDumper : BaseDumper
+	public class MySqlDumper : BaseTextDumper
 	{
 		public MySqlDumper(MySqlConnection connection) : base(connection) { }
+
+		public override bool CompatibleWithMultiTableStdout => true;
 
 		public override async Task WriteStartTableAsync(string table, Stream outputStream, bool writeSchema, bool truncate)
 		{
@@ -18,18 +21,7 @@ namespace mysqlchump.Export
 
 			if (writeSchema)
 			{
-				using var createTableCommand = new MySqlCommand($"SHOW CREATE TABLE `{table}`", Connection);
-				using var reader = await createTableCommand.ExecuteReaderAsync();
-
-
-				if (!await reader.ReadAsync())
-					throw new ArgumentException($"Could not find table `{table}`");
-
-				string createSql = (string)reader["Create Table"];
-
-				createSql = createSql.Replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS");
-
-				await writer.WriteAsync(createSql);
+				await writer.WriteAsync(await GetCreateSql(table));
 				await writer.WriteAsync(";\n\n\n");
 			}
 			
@@ -42,7 +34,7 @@ namespace mysqlchump.Export
 			await writer.WriteAsync("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
 			await writer.WriteAsync("SET SESSION UNIQUE_KEY_CHECKS = 0;\n");
 
-			await writer.WriteAsync("ALTER INSTANCE DISABLE INNODB REDO_LOG;\n\n");
+			//await writer.WriteAsync("ALTER INSTANCE DISABLE INNODB REDO_LOG;\n\n");
 
 			if (truncate)
 				await writer.WriteAsync($"TRUNCATE `{table}`;\n");
@@ -53,12 +45,15 @@ namespace mysqlchump.Export
 			await writer.WriteAsync("\n");
 		}
 
-		public override async Task WriteEndTableAsync(string table, Stream outputStream)
+		public override async Task WriteEndTableAsync(string table, Stream outputStream, bool tablesRemainingForStream)
 		{
 			await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
 			
 			await writer.WriteAsync("COMMIT;\n");
-			await writer.WriteAsync("ALTER INSTANCE ENABLE INNODB REDO_LOG;\n\n\n");
+			//await writer.WriteAsync("ALTER INSTANCE ENABLE INNODB REDO_LOG;");
+
+			if (tablesRemainingForStream)
+				await writer.WriteAsync("\n\n\n");
 		}
 
 		private async Task<ulong?> GetAutoIncrementValue(string table, MySqlTransaction transaction = null)
@@ -124,6 +119,58 @@ namespace mysqlchump.Export
 		protected override void EndInsertBatch(DbDataReader reader, StringBuilder builder)
 		{
 			builder.AppendLine(";\n\n");
+		}
+
+		protected static string GetMySqlStringRepresentation(DbColumn column, object value)
+		{
+			if (value == null || value == DBNull.Value)
+				return "NULL";
+
+			var columnType = column.DataType;
+
+			if (columnType == typeof(byte)
+				|| columnType == typeof(sbyte)
+				|| columnType == typeof(ushort)
+				|| columnType == typeof(short)
+				|| columnType == typeof(uint)
+				|| columnType == typeof(int)
+				|| columnType == typeof(ulong)
+				|| columnType == typeof(long)
+				|| columnType == typeof(float)
+				|| columnType == typeof(double)
+				|| columnType == typeof(decimal))
+			{
+				return value.ToString();
+			}
+
+			if (columnType == typeof(MySqlDecimal))
+			{
+				return ((MySqlDecimal)value).ToString();
+			}
+
+			if (columnType == typeof(DateTime))
+			{
+				var dtValue = (DateTime)value;
+				return $"'{dtValue:yyyy-MM-dd HH:mm:ss}'";
+			}
+
+			if (columnType == typeof(bool))
+				return (bool)value ? "1" : "0";
+
+			if (columnType == typeof(string))
+			{
+				var innerString = MySqlHelper.EscapeString(value.ToString())
+					.Replace("\r", "\\r")
+					.Replace("\n", "\\n")
+					.Replace("\0", "\\0");
+
+				return $"'{innerString}'";
+			}
+
+			if (columnType == typeof(byte[]))
+				return "_binary 0x" + Utility.ByteArrayToString((byte[])value);
+
+			throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
 		}
 	}
 }

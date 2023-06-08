@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
+using System.Data.SqlTypes;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -10,9 +11,11 @@ using MySqlConnector;
 
 namespace mysqlchump.Export
 {
-	public class PostgresDumper : BaseDumper
+	public class PostgresDumper : BaseTextDumper
 	{
 		public PostgresDumper(MySqlConnection connection) : base(connection) { }
+
+		public override bool CompatibleWithMultiTableStdout => true;
 
 		private Dictionary<string, DataRow> SourceTableSchema { get; set; } = new Dictionary<string, DataRow>();
 		private Dictionary<string, string> DestinationTableTypes{ get; set; } = new Dictionary<string, string>();
@@ -286,6 +289,50 @@ namespace mysqlchump.Export
 		protected override void EndInsertBatch(DbDataReader reader, StringBuilder builder)
 		{
 			builder.AppendLine(";\n\n");
+		}
+
+		protected static string GetPostgresStringRepresentation(DbColumn column, object value)
+		{
+			if (value == null || value == DBNull.Value)
+				return "NULL";
+
+			var columnType = column.DataType;
+
+			if (columnType == typeof(bool) || value is bool)
+				return (bool)value ? "TRUE" : "FALSE";
+
+			if (columnType == typeof(byte)
+			    || columnType == typeof(sbyte)
+			    || columnType == typeof(ushort)
+			    || columnType == typeof(short)
+			    || columnType == typeof(uint)
+			    || columnType == typeof(int)
+			    || columnType == typeof(ulong)
+			    || columnType == typeof(long)
+			    || columnType == typeof(float)
+			    || columnType == typeof(double)
+			    || columnType == typeof(decimal))
+			{
+				return value.ToString();
+			}
+
+			if (columnType == typeof(string))
+				return "E'" + MySqlHelper.EscapeString(value.ToString())
+					            .Replace("\r", "\\r")
+					            .Replace("\n", "\\n")
+				            + "'";
+
+			if (columnType == typeof(byte[]))
+				// This notation is only supported for Postgres 9.0 and up
+				return "'\\x" + Utility.ByteArrayToString((byte[])value) + "\'";
+
+			if (columnType == typeof(DateTime))
+			{
+				var dtValue = (DateTime)value;
+				return $"'{dtValue:yyyy-MM-dd HH:mm:ss}'";
+			}
+
+			throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
 		}
 	}
 }

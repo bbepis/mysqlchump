@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -41,6 +41,14 @@ namespace mysqlchump
 			await using var writer = new StreamWriter(stream, Utility.NoBomUtf8, 4096, true);
 
 			await writer.WriteAsync(text);
+		}
+
+		public static string ByteArrayToString(byte[] ba)
+		{
+			StringBuilder hex = new StringBuilder(ba.Length * 2);
+			foreach (byte b in ba)
+				hex.AppendFormat("{0:x2}", b);
+			return hex.ToString();
 		}
 	}
 }
