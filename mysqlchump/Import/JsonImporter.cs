@@ -20,12 +20,12 @@ internal class JsonImporter : BaseImporter
 		{
 			if (!jsonReader.Read() || jsonReader.TokenType != tokenType || (value != null && !jsonReader.Value.Equals(value)))
 				throw new InvalidOperationException(
-					$"Token type {jsonReader.TokenType} invalid at this position L{jsonReader.LineNumber}:{jsonReader.LinePosition} (expected {tokenType})");
+					$"Token type {jsonReader.TokenType} invalid at this position L{jsonReader.LineNumber}:{jsonReader.LinePosition} (expected {tokenType}{(value != null ? $", {value}" : "")})");
 		}
 
 		AssertToken(JsonToken.StartObject);
 		AssertToken(JsonToken.PropertyName, "version");
-		AssertToken(JsonToken.Integer, 1L);
+		AssertToken(JsonToken.Integer, 2L);
 		AssertToken(JsonToken.PropertyName, "tables");
 		AssertToken(JsonToken.StartArray);
 
@@ -59,14 +59,14 @@ internal class JsonImporter : BaseImporter
 			AssertToken(JsonToken.PropertyName, "columns");
 			AssertToken(JsonToken.StartObject);
 
-			var columns = new Dictionary<string, string>();
+			var columns = new List<(string columnName, string type)>();
 
 			while (await jsonReader.ReadAsync() && jsonReader.TokenType == JsonToken.PropertyName)
 			{
 				var columnName = (string)jsonReader.Value;
 				AssertToken(JsonToken.String);
 
-				columns[columnName] = (string)jsonReader.Value;
+				columns.Add((columnName, (string)jsonReader.Value));
 			}
 
 			AssertToken(JsonToken.PropertyName, "approx_count");
@@ -117,27 +117,20 @@ internal class JsonImporter : BaseImporter
 
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);
 
-	private (bool canContinue, string insertQuery, int rowCount) GetNextInsertBatch(JsonTextReader jsonReader, string tableName, Dictionary<string, string> columns, bool insertIgnore)
+	private (bool canContinue, string insertQuery, int rowCount) GetNextInsertBatch(JsonTextReader jsonReader, string tableName, List<(string columnName, string type)> columns, bool insertIgnore)
 	{
 		const int insertLimit = 2000;
 		int count = 0;
 
-		Dictionary<string, int> columnOrdering =
-			new(columns.Keys.OrderBy(x => x).Select((x, i) => new KeyValuePair<string, int>(x, i)));
-
-		var orderedColumnNames = columns.Keys.OrderBy(x => columnOrdering[x]).ToArray();
-
 		queryBuilder.Clear();
-		queryBuilder.Append($"INSERT{(insertIgnore ? " IGNORE" : "")} INTO `{tableName}` ({string.Join(',', orderedColumnNames)}) VALUES ");
-
-		var insertArray = new string[columns.Count];
-
+		queryBuilder.Append($"INSERT{(insertIgnore ? " IGNORE" : "")} INTO `{tableName}` ({string.Join(',', columns.Select(x => x.columnName))}) VALUES ");
+		
 		bool needsComma = false;
 		bool canContinue = true;
 
 		for (; count < insertLimit; count++)
 		{
-			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.StartObject)
+			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.StartArray)
 			{
 				canContinue = false;
 				break;
@@ -146,42 +139,46 @@ internal class JsonImporter : BaseImporter
 			queryBuilder.Append(needsComma ? ",(" : "(");
 			needsComma = true;
 
-			while (jsonReader.Read() && jsonReader.TokenType == JsonToken.PropertyName)
+			for (int columnNum = 0; columnNum < columns.Count; columnNum++)
 			{
-				var columnName = (string)jsonReader.Value;
+				if (!jsonReader.Read() || jsonReader.TokenType == JsonToken.EndArray)
+					throw new InvalidDataException("Row ends prematurely");
 
-				if (!columnOrdering.TryGetValue(columnName, out int index))
-					throw new InvalidDataException($"Unknown row column: {jsonReader.Value}");
-
-				jsonReader.Read();
+				if (columnNum > 0)
+					queryBuilder.Append(',');
+				
 				object value = jsonReader.Value;
+				string writtenValue;
 				
 				if (jsonReader.TokenType == JsonToken.Null)
-					insertArray[index] = "NULL";
-				else if (columns[columnName] == "BLOB")
-					insertArray[index] = "_binary 0x" + Utility.ByteArrayToString(Convert.FromBase64String((string)value));
+					writtenValue = "NULL";
+				else if (columns[columnNum].type == "BLOB")
+					writtenValue = "_binary 0x" + Utility.ByteArrayToString(Convert.FromBase64String((string)value));
 				else if (jsonReader.TokenType == JsonToken.String)
-					insertArray[index] = $"'{((string)value).Replace("\\", "\\\\").Replace("'", "''")}'";
+					writtenValue = $"'{((string)value).Replace("\\", "\\\\").Replace("'", "''")}'";
 				else if (jsonReader.TokenType == JsonToken.Boolean)
-					insertArray[index] = (bool)value ? "TRUE": "FALSE";
+					writtenValue = (bool)value ? "TRUE": "FALSE";
 				else if (jsonReader.TokenType == JsonToken.Date)
-					insertArray[index] = $"'{(DateTime)value:yyyy-MM-dd HH:mm:ss}'";
+					writtenValue = $"'{(DateTime)value:yyyy-MM-dd HH:mm:ss}'";
 				else if (jsonReader.TokenType == JsonToken.Integer
 				         || jsonReader.TokenType == JsonToken.Float)
-					insertArray[index] = value.ToString();
+					writtenValue = value.ToString();
 				else
 					throw new InvalidDataException($"Unknown token type: {jsonReader.TokenType}");
+
+				queryBuilder.Append(writtenValue);
 			}
 
-			queryBuilder.Append(string.Join(',', insertArray));
-
-			queryBuilder.Append(")");
+			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.EndArray)
+				throw new InvalidDataException("Row ends prematurely");
+			
+			queryBuilder.Append(')');
 		}
 
 		if (count == 0)
 			return (false, null, 0);
 
-		queryBuilder.Append(";");
+		queryBuilder.Append(';');
 
 		return (canContinue, queryBuilder.ToString(), count);
 	}

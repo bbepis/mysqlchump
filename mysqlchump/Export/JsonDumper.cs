@@ -29,7 +29,7 @@ public class JsonDumper : BaseDumper
 
 			await JsonWriter.WriteStartObjectAsync();              // {
 			await JsonWriter.WritePropertyNameAsync("version");    //    "version"
-			await JsonWriter.WriteValueAsync(1);                   //             : 1,
+			await JsonWriter.WriteValueAsync(2);                   //             : 2,
 			await JsonWriter.WritePropertyNameAsync("tables");     //    "tables"
 			await JsonWriter.WriteStartArrayAsync();               //            : [
 		}
@@ -114,17 +114,16 @@ public class JsonDumper : BaseDumper
 					dumpTimer.Restart();
 				}
 
-				JsonWriter.WriteStartObject();
+				JsonWriter.WriteStartArray();
 
 				for (int i = 0; i < Columns.Length; i++)
 				{
 					var column = Columns[i];
-
-					JsonWriter.WritePropertyName(column.ColumnName);
+					
 					JsonWriter.WriteValue(GetJsonMySqlValue(column, reader[i]));
 				}
 
-				JsonWriter.WriteEndObject();
+				JsonWriter.WriteEndArray();
 				rowCounter++;
 			}
 		}
