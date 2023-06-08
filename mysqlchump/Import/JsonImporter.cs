@@ -1,18 +1,15 @@
 using MySqlConnector;
-using Nito.AsyncEx;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading;
-using System.Threading.Channels;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 
 namespace mysqlchump.Import;
 
-internal class JsonImporter
+internal class JsonImporter : BaseImporter
 {
 	public async Task ImportAsync(Stream dataStream, bool insertIgnore, Func<MySqlConnection> createConnection)
 	{
@@ -34,8 +31,6 @@ internal class JsonImporter
 
 		async Task<bool> ProcessTable(JsonTextReader jsonReader)
 		{
-			const int concurrentLimit = 12;
-
 			if (!jsonReader.Read() || jsonReader.TokenType == JsonToken.EndArray)
 				return false;
 
@@ -81,41 +76,7 @@ internal class JsonImporter
 			AssertToken(JsonToken.PropertyName, "rows");
 			AssertToken(JsonToken.StartArray);
 
-			var channel = Channel.CreateBounded<string>(2);
-			var transactionSemaphore = new AsyncSemaphore(1);
-
-			int processedRowCount = 0;
-
-			void writeProgress()
-			{
-				if (OperatingSystem.IsWindows())
-					Console.CursorLeft = 0;
-				else
-					Console.Error.Write("\u001b[1000D"); // move cursor to the left
-				
-				double percentage = 100d * processedRowCount / approxCount.GetValueOrDefault();
-
-				if (percentage > 100 || double.IsNaN(percentage))
-					percentage = 100;
-
-				Console.Error.Write($"{tableName} - {processedRowCount:N0} / ~{approxCount?.ToString("N0") ?? "?"} - ({percentage:N2}%)");
-			}
-
-			var cts = new CancellationTokenSource();
-
-			bool printProgress = !Console.IsErrorRedirected;
-
-			if (printProgress)
-				_ = Task.Run(async () =>
-				{
-					while (!cts.IsCancellationRequested)
-					{
-						writeProgress();
-						await Task.Delay(1000);
-					}
-				});
-
-			var enqueueTask = Task.Run(async () =>
+			await DoParallelInserts(12, approxCount, tableName, createConnection, async (channel, reportRowCount) =>
 			{
 				try
 				{
@@ -123,7 +84,7 @@ internal class JsonImporter
 					{
 						var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(jsonReader, tableName, columns, insertIgnore);
 
-						processedRowCount += rowCount;
+						reportRowCount(rowCount);
 
 						if (insertQuery == null)
 							break;
@@ -142,58 +103,6 @@ internal class JsonImporter
 
 				channel.Writer.Complete();
 			});
-
-			var sendTasks = Enumerable.Range(0, concurrentLimit).Select(async _ =>
-			{
-				await using var connection = createConnection();
-				connection.Open();
-
-				Task sendCommand(string commandText)
-				{
-					using var command = connection.CreateCommand();
-
-					command.CommandTimeout = 9999999;
-					command.CommandText = commandText;
-
-					return command.ExecuteNonQueryAsync();
-				}
-
-				string commandText = null;
-
-				try
-				{
-					using (var @lock = await transactionSemaphore.LockAsync())
-						await sendCommand("SET SESSION time_zone = \"+00:00\"; SET autocommit=0; SET UNIQUE_CHECKS=0; START TRANSACTION;");
-					
-					await foreach (var text in channel.Reader.ReadAllAsync())
-					{
-						commandText = text;
-
-						await sendCommand(commandText);
-					}
-
-					commandText = null;
-
-					using (var @lock = await transactionSemaphore.LockAsync())
-						await sendCommand("COMMIT;");
-				}
-				catch (Exception ex)
-				{
-					if (commandText != null)
-						Console.Error.WriteLine(commandText);
-
-					Console.Error.WriteLine(ex);
-				}
-			}).ToArray();
-
-			await Task.WhenAll(sendTasks.Append(enqueueTask));
-			
-			if (printProgress)
-			{
-				cts.Cancel();
-				writeProgress();
-				Console.Error.WriteLine();
-			}
 
 			AssertToken(JsonToken.PropertyName, "actual_count");
 			AssertToken(JsonToken.Integer);

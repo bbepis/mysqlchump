@@ -1,17 +1,15 @@
-﻿using MySqlConnector;
-using Nito.AsyncEx;
+using MySqlConnector;
 using Sylvan.Data.Csv;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 
 namespace mysqlchump.Import;
 
-internal class CsvImporter
+internal class CsvImporter : BaseImporter
 {
 	public async Task ImportAsync(Stream dataStream, string table, string[] columns, bool fixInvalidCsv, bool useHeaders, bool insertIgnore, Func<MySqlConnection> createConnection)
 	{
@@ -52,57 +50,21 @@ internal class CsvImporter
 				columnTypes[i] = dbColumn.DataType;
 			}
 		}
-		
-		const int concurrentLimit = 12;
 
-		var queue = new AsyncProducerConsumerQueue<string>(2);
-		var transactionSemaphore = new AsyncSemaphore(1);
-
-		void writeProgress()
-		{
-			if (OperatingSystem.IsWindows())
-				Console.CursorLeft = 0;
-			else
-				Console.Error.Write("\u001b[1000D"); // move cursor to the left
-
-			if (dataStream is FileStream fileStream)
-			{
-				double percentage = 100 * fileStream.Position / (double)fileStream.Length;
-
-				Console.Error.Write($"{table} - {csvReader.RowNumber:N0} - {fileStream.Position / (1024 * 1024):N0}MB / {fileStream.Length / (1024 * 1024):N0}MB ({percentage:N2}%)");
-			}
-			else
-			{
-				Console.Error.Write($"{table} - {csvReader.RowNumber:N0}");
-			}
-		}
-
-		var cts = new CancellationTokenSource();
-
-		bool printProgress = !Console.IsErrorRedirected;
-
-		if (printProgress)
-			_ = Task.Run(async () =>
-			{
-				while (!cts.IsCancellationRequested)
-				{
-					writeProgress();
-					await Task.Delay(1000);
-				}
-			});
-
-		var enqueueTask = Task.Run(async () =>
+		await DoParallelInserts(12, null, table, createConnection, async (channel, reportRowCount) =>
 		{
 			try
 			{
 				while (true)
 				{
-					var (canContinue, insertQuery) = GetNextInsertBatch(csvReader, table, columns, columnTypes, insertIgnore);
+					var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(csvReader, table, columns, columnTypes, insertIgnore);
 
 					if (insertQuery == null)
 						break;
 
-					await queue.EnqueueAsync(insertQuery);
+					reportRowCount(rowCount);
+
+					await channel.Writer.WriteAsync(insertQuery);
 
 					if (!canContinue)
 						break;
@@ -114,62 +76,13 @@ internal class CsvImporter
 				Console.Error.WriteLine(ex.ToString());
 			}
 
-			queue.CompleteAdding();
+			channel.Writer.Complete();
 		});
-
-		var sendTasks = Enumerable.Range(0, concurrentLimit).Select(async _ =>
-		{
-			await using var connection = createConnection();
-			connection.Open();
-
-			Task sendCommand(string commandText)
-			{
-				using var command = connection.CreateCommand();
-
-				command.CommandTimeout = 9999999;
-				command.CommandText = commandText;
-
-				return command.ExecuteNonQueryAsync();
-			}
-
-			string commandText = null;
-
-			try
-			{
-				using (var @lock = await transactionSemaphore.LockAsync())
-					await sendCommand("SET SESSION time_zone = \"+00:00\"; SET autocommit=0; SET UNIQUE_CHECKS=0; SET sql_log_bin=OFF; START TRANSACTION;");
-				
-				while (await queue.OutputAvailableAsync())
-				{
-					commandText = await queue.DequeueAsync();
-
-					await sendCommand(commandText);
-				}
-
-				commandText = null;
-
-				using (var @lock = await transactionSemaphore.LockAsync())
-					await sendCommand("COMMIT; SET UNIQUE_CHECKS=1;");
-			}
-			catch (Exception ex)
-			{
-				if (commandText != null)
-					Console.Error.WriteLine(commandText);
-
-				Console.Error.WriteLine(ex);
-			}
-		}).ToArray();
-
-		await Task.WhenAll(sendTasks.Append(enqueueTask));
-
-		cts.Cancel();
-		if (printProgress)
-			Console.Error.WriteLine();
 	}
 
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);
 
-	private (bool canContinue, string insertQuery) GetNextInsertBatch(CsvDataReader csvReader, string table, string[] columnNames, Type[] columnTypes, bool insertIgnore)
+	private (bool canContinue, string insertQuery, int rowCount) GetNextInsertBatch(CsvDataReader csvReader, string table, string[] columnNames, Type[] columnTypes, bool insertIgnore)
 	{
 		const int insertLimit = 4000;
 		int count = 0;
@@ -214,11 +127,11 @@ internal class CsvImporter
 		}
 
 		if (count == 0)
-			return (false, null);
+			return (false, null, 0);
 
 		queryBuilder.Append(";");
 
-		return (!(count < insertLimit), queryBuilder.ToString());
+		return (!(count < insertLimit), queryBuilder.ToString(), count);
 	}
 }
 
