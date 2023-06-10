@@ -119,8 +119,10 @@ public class JsonDumper : BaseDumper
 				for (int i = 0; i < Columns.Length; i++)
 				{
 					var column = Columns[i];
-					
-					JsonWriter.WriteValue(GetJsonMySqlValue(column, reader[i]));
+
+					var value = column.DataType == typeof(decimal) ? reader.GetMySqlDecimal(i) : reader[i];
+
+					JsonWriter.WriteValue(GetJsonMySqlValue(column, value));
 				}
 
 				JsonWriter.WriteEndArray();
@@ -139,7 +141,7 @@ public class JsonDumper : BaseDumper
 				}
 				catch
 				{
-					columnValues.Add("<ERROR>");
+					columnValues.Add($"<ERROR> ({Columns[i].DataType})");
 				}
 			}
 
@@ -176,6 +178,9 @@ public class JsonDumper : BaseDumper
 	{
 		if (value == null || value == DBNull.Value)
 			return null;
+
+		if (value is MySqlDecimal mySqlDecimal)
+			return mySqlDecimal.ToString();
 
 		return value;
 
