@@ -11,7 +11,7 @@ namespace mysqlchump.Import;
 
 internal class JsonImporter : BaseImporter
 {
-	public async Task ImportAsync(Stream dataStream, bool insertIgnore, Func<MySqlConnection> createConnection)
+	public async Task ImportAsync(Stream dataStream, bool insertIgnore, Func<MySqlConnection> createConnection, bool noCreate)
 	{
 		using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
 		using var jsonReader = new JsonTextReader(reader);
@@ -44,17 +44,18 @@ internal class JsonImporter : BaseImporter
 
 			string createStatement = (string)jsonReader.Value;
 
-			await using (var connection = createConnection())
-			{
-				connection.Open();
-				
-				using var command = connection.CreateCommand();
+			if (!noCreate)
+				await using (var connection = createConnection())
+				{
+					connection.Open();
+					
+					using var command = connection.CreateCommand();
 
-				command.CommandTimeout = 9999999;
-				command.CommandText = createStatement;
+					command.CommandTimeout = 9999999;
+					command.CommandText = createStatement;
 
-				await command.ExecuteNonQueryAsync();
-			}
+					await command.ExecuteNonQueryAsync();
+				}
 
 			AssertToken(JsonToken.PropertyName, "columns");
 			AssertToken(JsonToken.StartObject);
@@ -123,7 +124,7 @@ internal class JsonImporter : BaseImporter
 		int count = 0;
 
 		queryBuilder.Clear();
-		queryBuilder.Append($"INSERT{(insertIgnore ? " IGNORE" : "")} INTO `{tableName}` ({string.Join(',', columns.Select(x => x.columnName))}) VALUES ");
+		queryBuilder.Append($"INSERT{(insertIgnore ? " IGNORE" : "")} INTO `{tableName}` ({string.Join(',', columns.Select(x => $"`{x.columnName}`"))}) VALUES ");
 		
 		bool needsComma = false;
 		bool canContinue = true;

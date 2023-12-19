@@ -32,7 +32,7 @@ namespace mysqlchump.Export
 			
 			await writer.WriteAsync("SET SESSION time_zone = \"+00:00\";\n");
 			await writer.WriteAsync("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
-			await writer.WriteAsync("SET SESSION UNIQUE_KEY_CHECKS = 0;\n");
+			await writer.WriteAsync("SET SESSION UNIQUE_CHECKS = 0;\n");
 
 			//await writer.WriteAsync("ALTER INSTANCE DISABLE INNODB REDO_LOG;\n\n");
 
@@ -93,7 +93,9 @@ namespace mysqlchump.Export
 				if (!rowStart)
 					builder.Append(", ");
 
-				object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal)) && reader is MySqlDataReader mysqlReader
+				object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal))
+				               && reader is MySqlDataReader mysqlReader
+							   && reader[column.ColumnName] != DBNull.Value
 					? mysqlReader.GetMySqlDecimal(column.ColumnName)
 					: reader[column.ColumnName];
 

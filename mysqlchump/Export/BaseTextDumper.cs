@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data.Common;
 using System.Data.SqlTypes;
@@ -147,7 +147,8 @@ public abstract class BaseTextDumper : BaseDumper
 			throw;
 		}
 
-		WriteInsertEnd(bodyBuilder);
+		if (counter > 0)
+			WriteInsertEnd(bodyBuilder);
 
 		await FlushStringBuilderToDisk();
 

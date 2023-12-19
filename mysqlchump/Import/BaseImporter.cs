@@ -11,12 +11,12 @@ namespace mysqlchump.Import;
 internal class BaseImporter
 {
 	protected async Task DoParallelInserts(int maxConcurrency, ulong? approxCount, string tableName,
-		Func<MySqlConnection> createConnection, Func<Channel<string>, Action<int>, Task> producerTask)
+		Func<MySqlConnection> createConnection, Func<Channel<string>, Action<long>, Task> producerTask)
 	{
 		var channel = Channel.CreateBounded<string>(2);
 		var transactionSemaphore = new AsyncSemaphore(1);
 
-		int processedRowCount = 0;
+		long processedRowCount = 0;
 
 		void writeProgress()
 		{

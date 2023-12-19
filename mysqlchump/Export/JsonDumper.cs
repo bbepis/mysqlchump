@@ -77,7 +77,7 @@ public class JsonDumper : BaseDumper
 		await JsonWriter.WritePropertyNameAsync("rows");
 		await JsonWriter.WriteStartArrayAsync();
 
-		int rowCounter = 0;
+		long rowCounter = 0;
 			
 		var dumpTimer = new Stopwatch();
 		dumpTimer.Start();
@@ -92,7 +92,7 @@ public class JsonDumper : BaseDumper
 			else
 				Console.Error.Write("\u001b[1000D"); // move cursor to the left
 
-			double percentage = totalRowCount.HasValue ?100 * currentRow / (double)totalRowCount.Value : 0;
+			double percentage = totalRowCount.HasValue ? 100 * currentRow / (double)totalRowCount.Value : 0;
 			if (percentage > 100 || double.IsNaN(percentage))
 			{
 				// mysql stats are untrustworthy
@@ -120,7 +120,12 @@ public class JsonDumper : BaseDumper
 				{
 					var column = Columns[i];
 
-					var value = column.DataType == typeof(decimal) ? reader.GetMySqlDecimal(i) : reader[i];
+					object value;
+
+					if (column.DataType == typeof(decimal) && reader[i] != DBNull.Value)
+						value = reader.GetMySqlDecimal(i);
+					else
+						value = reader[i];
 
 					JsonWriter.WriteValue(GetJsonMySqlValue(column, value));
 				}
