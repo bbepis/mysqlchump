@@ -52,7 +52,6 @@ internal class BaseImporter
 		var sendTasks = Enumerable.Range(0, maxConcurrency).Select(async _ =>
 		{
 			await using var connection = createConnection();
-			connection.Open();
 
 			Task sendCommand(string commandText)
 			{

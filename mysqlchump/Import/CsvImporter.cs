@@ -11,7 +11,7 @@ namespace mysqlchump.Import;
 
 internal class CsvImporter : BaseImporter
 {
-	public async Task ImportAsync(Stream dataStream, string table, string[] columns, bool fixInvalidCsv, bool useHeaders, bool insertIgnore, Func<MySqlConnection> createConnection)
+	public async Task ImportAsync(Stream dataStream, string table, string[] columns, bool fixInvalidCsv, int parallelCount, bool useHeaders, bool insertIgnore, Func<MySqlConnection> createConnection)
 	{
 		using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
 
@@ -30,8 +30,6 @@ internal class CsvImporter : BaseImporter
 
 		await using (var connection = createConnection())
 		{
-			await connection.OpenAsync();
-
 			await using var readCommand = connection.CreateCommand();
 			readCommand.CommandText = $"SELECT * FROM `{table}` LIMIT 0";
 			await using var sqlReader = await readCommand.ExecuteReaderAsync();
@@ -51,7 +49,7 @@ internal class CsvImporter : BaseImporter
 			}
 		}
 
-		await DoParallelInserts(12, null, table, createConnection, async (channel, reportRowCount) =>
+		await DoParallelInserts(parallelCount, null, table, createConnection, async (channel, reportRowCount) =>
 		{
 			try
 			{

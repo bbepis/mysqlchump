@@ -13,7 +13,6 @@ internal class MysqlRawImporter
 		using var reader = new StreamReader(dataStream);
 
 		await using var connection = createConnection();
-		connection.Open();
 
 		Task sendCommand(string commandText)
 		{

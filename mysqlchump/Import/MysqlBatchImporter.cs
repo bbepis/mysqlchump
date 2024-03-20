@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -37,7 +37,6 @@ internal class MysqlBatchImporter
 		var sendTasks = Enumerable.Range(0, concurrentLimit).Select(async _ =>
 		{
 			await using var connection = createConnection();
-			connection.Open();
 
 			Task sendCommand(string commandText)
 			{

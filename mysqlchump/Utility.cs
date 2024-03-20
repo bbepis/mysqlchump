@@ -50,5 +50,45 @@ namespace mysqlchump
 				hex.AppendFormat("{0:x2}", b);
 			return hex.ToString();
 		}
+
+		// Adapted from https://stackoverflow.com/a/8094334
+		public static bool Glob(string value, string pattern)
+		{
+			int pos = 0;
+
+			while (pos < pattern.Length)
+			{
+				switch (pattern[pos])
+				{
+					case '?': break;
+
+					case '*':
+					{
+						for (int i = value.Length; i >= pos; i--)
+						{
+							if (Glob(value.Substring(i), pattern.Substring(pos + 1)))
+							{
+								return true;
+							}
+						}
+
+						return false;
+					}
+
+					default:
+					{
+						if (value.Length == pos || char.ToUpper(pattern[pos]) != char.ToUpper(value[pos]))
+						{
+							return false;
+						}
+						break;
+					}
+				}
+
+				pos++;
+			}
+
+			return value.Length == pos;
+		}
 	}
 }

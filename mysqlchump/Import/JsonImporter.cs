@@ -6,12 +6,14 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
+using System.Text.RegularExpressions;
 
 namespace mysqlchump.Import;
 
 internal class JsonImporter : BaseImporter
 {
-	public async Task ImportAsync(Stream dataStream, bool insertIgnore, Func<MySqlConnection> createConnection, bool noCreate)
+	public async Task ImportAsync(Stream dataStream, Func<MySqlConnection> createConnection, string[] sourceTables,
+		bool insertIgnore, bool noCreate, bool upgradeTokuDb, bool cleanAsagiIndexes)
 	{
 		using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
 		using var jsonReader = new JsonTextReader(reader);
@@ -44,18 +46,32 @@ internal class JsonImporter : BaseImporter
 
 			string createStatement = (string)jsonReader.Value;
 
-			if (!noCreate)
-				await using (var connection = createConnection())
+			if (upgradeTokuDb)
+			{
+				// TODO: replace with more generic regex
+				createStatement = createStatement
+					.Replace("ENGINE=TokuDB", "ENGINE=InnoDB");
+
+				var regex = new Regex(@"`?compression`?='?tokudb_[a-z]+'?", RegexOptions.IgnoreCase);
+
+				createStatement = regex.Replace(createStatement, "ROW_FORMAT=DYNAMIC");
+			}
+
+			if (cleanAsagiIndexes)
+			{
+				var primaryKeyRegex = new Regex(@"PRIMARY KEY \([^)]+\),");
+				var keyRegex = new Regex(@"(?:UNIQUE )?KEY `?([a-z_]+)`?\s*.+$", RegexOptions.Multiline);
+
+				bool isAsagi = keyRegex.Matches(createStatement).Any(x => x.Groups[1].Value == "num_subnum_index");
+
+				if (isAsagi)
 				{
-					connection.Open();
-					
-					using var command = connection.CreateCommand();
-
-					command.CommandTimeout = 9999999;
-					command.CommandText = createStatement;
-
-					await command.ExecuteNonQueryAsync();
+					createStatement = keyRegex.Replace(createStatement, "");
+					// we can't change primary key because AUTO_INCREMENT has to be on the primary key iirc
+					// createStatement = primaryKeyRegex.Replace(createStatement, "PRIMARY KEY (`num`, `subnum`)");
+					createStatement = primaryKeyRegex.Replace(createStatement, "PRIMARY KEY (`docid`), KEY `custom_num` (`num`), KEY `custom_threadnum_num` (`threadnum`, `num`)");
 				}
+			}
 
 			AssertToken(JsonToken.PropertyName, "columns");
 			AssertToken(JsonToken.StartObject);
@@ -77,34 +93,67 @@ internal class JsonImporter : BaseImporter
 			AssertToken(JsonToken.PropertyName, "rows");
 			AssertToken(JsonToken.StartArray);
 
-			await DoParallelInserts(12, approxCount, tableName, createConnection, async (channel, reportRowCount) =>
+			if (sourceTables != null
+				&& sourceTables.Length > 0
+				&& sourceTables.All(x => !(tableName.Equals(x, StringComparison.OrdinalIgnoreCase) || x != "*")))
 			{
-				try
-				{
-					while (true)
+				if (!noCreate)
+					await using (var connection = createConnection())
 					{
-						var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(jsonReader, tableName, columns, insertIgnore);
+						using var command = connection.CreateCommand();
 
-						reportRowCount(rowCount);
+						command.CommandTimeout = 9999999;
+						command.CommandText = createStatement;
 
-						if (insertQuery == null)
-							break;
-
-						await channel.Writer.WriteAsync(insertQuery);
-
-						if (!canContinue)
-							break;
+						await command.ExecuteNonQueryAsync();
 					}
-				}
-				catch (Exception ex)
+
+				await DoParallelInserts(12, approxCount, tableName, createConnection, async (channel, reportRowCount) =>
 				{
-					Console.Error.WriteLine($"Error when reading data source @ L{jsonReader.LineNumber}:{jsonReader.LinePosition}");
-					Console.Error.WriteLine(ex.ToString());
+					try
+					{
+						while (true)
+						{
+							var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(jsonReader, tableName, columns, insertIgnore);
+
+							reportRowCount(rowCount);
+
+							if (insertQuery == null)
+								break;
+
+							await channel.Writer.WriteAsync(insertQuery);
+
+							if (!canContinue)
+								break;
+						}
+					}
+					catch (Exception ex)
+					{
+						Console.Error.WriteLine($"Error when reading data source @ L{jsonReader.LineNumber}:{jsonReader.LinePosition}");
+						Console.Error.WriteLine(ex.ToString());
+					}
+
+					channel.Writer.Complete();
+				});
+			}
+			else
+			{
+				Console.Error.WriteLine($"Skipping table '{tableName}' ({(approxCount.HasValue ? $"~{approxCount}" : "?")} rows)");
+
+				int layer = 0;
+
+				while (jsonReader.Read() && layer >= 0)
+				{
+					if (jsonReader.TokenType == JsonToken.StartArray)
+						layer++;
+					else if (jsonReader.TokenType == JsonToken.EndArray)
+						layer--;
+
+					if (layer < 0)
+						break;
 				}
-
-				channel.Writer.Complete();
-			});
-
+			}
+			
 			AssertToken(JsonToken.PropertyName, "actual_count");
 			AssertToken(JsonToken.Integer);
 
