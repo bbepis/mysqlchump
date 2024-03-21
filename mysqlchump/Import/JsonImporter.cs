@@ -69,7 +69,7 @@ internal class JsonImporter : BaseImporter
 					createStatement = keyRegex.Replace(createStatement, "");
 					// we can't change primary key because AUTO_INCREMENT has to be on the primary key iirc
 					// createStatement = primaryKeyRegex.Replace(createStatement, "PRIMARY KEY (`num`, `subnum`)");
-					createStatement = primaryKeyRegex.Replace(createStatement, "PRIMARY KEY (`docid`), KEY `custom_num` (`num`), KEY `custom_threadnum_num` (`threadnum`, `num`)");
+					createStatement = primaryKeyRegex.Replace(createStatement, "PRIMARY KEY (`doc_id`), KEY `custom_num` (`num`), KEY `custom_threadnum_num` (`thread_num`, `num`)");
 				}
 			}
 
@@ -95,7 +95,8 @@ internal class JsonImporter : BaseImporter
 
 			if (sourceTables != null
 				&& sourceTables.Length > 0
-				&& sourceTables.All(x => !(tableName.Equals(x, StringComparison.OrdinalIgnoreCase) || x != "*")))
+				&& !sourceTables.Any(x => x == "*")
+				&& sourceTables.Any(x => tableName.Equals(x, StringComparison.OrdinalIgnoreCase)))
 			{
 				if (!noCreate)
 					await using (var connection = createConnection())
