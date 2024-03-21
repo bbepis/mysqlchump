@@ -93,10 +93,10 @@ internal class JsonImporter : BaseImporter
 			AssertToken(JsonToken.PropertyName, "rows");
 			AssertToken(JsonToken.StartArray);
 
-			if (sourceTables != null
-				&& sourceTables.Length > 0
-				&& !sourceTables.Any(x => x == "*")
-				&& sourceTables.Any(x => tableName.Equals(x, StringComparison.OrdinalIgnoreCase)))
+			if (sourceTables == null
+				|| sourceTables.Length == 0
+				|| sourceTables.Any(x => x == "*")
+				|| sourceTables.Any(x => tableName.Equals(x, StringComparison.OrdinalIgnoreCase)))
 			{
 				if (!noCreate)
 					await using (var connection = createConnection())
