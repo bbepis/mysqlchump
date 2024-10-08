@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Data.Common;
@@ -39,7 +39,7 @@ namespace mysqlchump.Export
 			await using var reader = await createTableCommand.ExecuteReaderAsync();
 
 			var dbTable = new DataTable();
-			dbTable.Load(reader);
+			//dbTable.Load(reader);
 
 			//if (!await reader.ReadAsync())
 			//	throw new ArgumentException($"Could not find table `{table}`");

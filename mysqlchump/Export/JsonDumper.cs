@@ -8,6 +8,7 @@ using System.Text;
 using System.Threading.Tasks;
 using MySqlConnector;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 
 namespace mysqlchump.Export;
 
@@ -122,7 +123,7 @@ public class JsonDumper : BaseDumper
 
 					object value;
 
-					if (column.DataType == typeof(decimal) && reader[i] != DBNull.Value)
+					if (column.DataType == typeof(decimal) && !reader.IsDBNull(i))
 						value = reader.GetMySqlDecimal(i);
 					else
 						value = reader[i];
@@ -134,7 +135,7 @@ public class JsonDumper : BaseDumper
 				rowCounter++;
 			}
 		}
-		catch
+		catch (Exception ex)
 		{
 			List<string> columnValues = new List<string>();
 
@@ -142,7 +143,10 @@ public class JsonDumper : BaseDumper
 			{
 				try
 				{
-					columnValues.Add(reader[i]?.ToString() ?? "<NULL>");
+					if (Columns[i].DataType == typeof(decimal) && reader[i] != DBNull.Value)
+						columnValues.Add(reader.GetMySqlDecimal(i).ToString() ?? "<NULL>");
+					else
+						columnValues.Add(reader[i]?.ToString() ?? "<NULL>");
 				}
 				catch
 				{
@@ -153,6 +157,8 @@ public class JsonDumper : BaseDumper
 			Console.Error.WriteLine();
 			Console.Error.WriteLine(string.Join(", ", Columns.Select(x => x.ColumnName)));
 			Console.Error.WriteLine(string.Join(", ", columnValues));
+
+			Console.Error.WriteLine(ex);
 
 			throw;
 		}

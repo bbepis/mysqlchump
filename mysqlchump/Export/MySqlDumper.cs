@@ -95,7 +95,7 @@ namespace mysqlchump.Export
 
 				object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal))
 				               && reader is MySqlDataReader mysqlReader
-							   && reader[column.ColumnName] != DBNull.Value
+							   && !reader.IsDBNull(column.ColumnOrdinal!.Value)
 					? mysqlReader.GetMySqlDecimal(column.ColumnName)
 					: reader[column.ColumnName];
 

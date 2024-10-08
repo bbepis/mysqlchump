@@ -124,7 +124,7 @@ public abstract class BaseTextDumper : BaseDumper
 				CreateInsertLine(reader, bodyBuilder);
 			}
 		}
-		catch (Exception)
+		catch (Exception ex)
 		{
 			List<string> columnValues = new List<string>();
 
@@ -143,6 +143,8 @@ public abstract class BaseTextDumper : BaseDumper
 			Console.Error.WriteLine();
 			Console.Error.WriteLine(string.Join(", ", Columns.Select(x => x.ColumnName)));
 			Console.Error.WriteLine(string.Join(", ", columnValues));
+
+			Console.WriteLine(ex);
 
 			throw;
 		}
