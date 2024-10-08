@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using System.Text.RegularExpressions;
+using System.Text.Json;
 
 namespace mysqlchump.Import;
 
@@ -15,11 +16,19 @@ internal class JsonImporter : BaseImporter
 	public async Task ImportAsync(Stream dataStream, Func<MySqlConnection> createConnection, string[] sourceTables,
 		bool insertIgnore, bool noCreate, bool upgradeTokuDb, bool cleanAsagiIndexes)
 	{
-		using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
-		using var jsonReader = new JsonTextReader(reader);
+		var jsonReader = new JsonStreamReader(dataStream, new byte[4096]);
 
-		void AssertToken(JsonToken tokenType, object value = null)
+		void AssertToken(JsonTokenType tokenType, object value = null)
 		{
+			var token = jsonReader.ReadToken();
+
+			if (token == null)
+				throw new EndOfStreamException("Reached end of stream abruptly");
+
+			if (token != tokenType)
+				throw new InvalidOperationException(
+					$"Token type {tokenType} invalid at this position L{jsonReader.GetReader().}:{jsonReader.LinePosition} (expected {token}{(value != null ? $", {value}" : "")})");
+
 			if (!jsonReader.Read() || jsonReader.TokenType != tokenType || (value != null && !jsonReader.Value.Equals(value)))
 				throw new InvalidOperationException(
 					$"Token type {jsonReader.TokenType} invalid at this position L{jsonReader.LineNumber}:{jsonReader.LinePosition} (expected {tokenType}{(value != null ? $", {value}" : "")})");
