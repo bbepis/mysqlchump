@@ -6,15 +6,44 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
-using System.Text.RegularExpressions;
+using System.Threading.Channels;
 
 namespace mysqlchump.Import;
 
 internal class JsonImporter : BaseImporter
 {
-	public async Task ImportAsync(Stream dataStream, Func<MySqlConnection> createConnection, string[] sourceTables,
-		bool insertIgnore, bool noCreate, bool upgradeTokuDb, bool cleanAsagiIndexes)
+	public async Task ImportAsync(Stream dataStream, Func<MySqlConnection> createConnection, ImportOptions options)
 	{
+		var indexQueue = Channel.CreateUnbounded<(string text, string sql)>();
+
+		Task reindexTask = null;
+
+		if (options.DeferIndexes)
+		{
+			reindexTask = Task.Run(async () =>
+			{
+				await using (var connection = createConnection())
+				{
+					using var command = connection.CreateCommand();
+					command.CommandTimeout = 9999999;
+
+					command.CommandText = "SET FOREIGN_KEY_CHECKS = 0;";
+					await command.ExecuteNonQueryAsync();
+					
+					await foreach (var (text, sql) in indexQueue.Reader.ReadAllAsync())
+					{
+						Console.Error.WriteLine(text);
+						command.CommandText = sql;
+
+						await command.ExecuteNonQueryAsync();
+					}
+
+					command.CommandText = "SET FOREIGN_KEY_CHECKS = 1;";
+					await command.ExecuteNonQueryAsync();
+				}
+			});
+		}
+
 		using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
 		using var jsonReader = new JsonTextReader(reader);
 
@@ -46,31 +75,41 @@ internal class JsonImporter : BaseImporter
 
 			string createStatement = (string)jsonReader.Value;
 
-			if (upgradeTokuDb)
+			//Console.Error.WriteLine(createStatement);
+
+			var parsedTable = CreateTableParser.Parse(createStatement);
+
+			if (options.UpgradeTokuDb)
 			{
-				// TODO: replace with more generic regex
-				createStatement = createStatement
-					.Replace("ENGINE=TokuDB", "ENGINE=InnoDB");
+				if (parsedTable.Options.TryGetValue("ENGINE", out var engine)
+					&& engine.Equals("TokuDB", StringComparison.OrdinalIgnoreCase))
+				{
+					parsedTable.Options["ENGINE"] = "InnoDB";
+				}
 
-				var regex = new Regex(@"`?compression`?='?tokudb_[a-z]+'?", RegexOptions.IgnoreCase);
+				if (parsedTable.Options.TryGetValue("COMPRESSION", out var compression)
+					&& compression.StartsWith("tokudb_", StringComparison.OrdinalIgnoreCase))
+				{
+					parsedTable.Options.Remove("COMPRESSION");
 
-				createStatement = regex.Replace(createStatement, "ROW_FORMAT=DYNAMIC");
+					parsedTable.Options["ROW_FORMAT"] = "DYNAMIC";
+				}
+
+				createStatement = parsedTable.ToCreateTableSql();
 			}
 
-			if (cleanAsagiIndexes)
+			var removedIndexes = new List<Index>();
+			var removedFks = new List<ForeignKey>();
+
+			if (options.DeferIndexes || options.StripIndexes)
 			{
-				var primaryKeyRegex = new Regex(@"PRIMARY KEY \([^)]+\),");
-				var keyRegex = new Regex(@"(?:UNIQUE )?KEY `?([a-z_]+)`?\s*.+$", RegexOptions.Multiline);
+				removedIndexes.AddRange(parsedTable.Indexes.Where(x => x.Type != IndexType.Primary));
+				parsedTable.Indexes.RemoveAll(x => x.Type != IndexType.Primary);
 
-				bool isAsagi = keyRegex.Matches(createStatement).Any(x => x.Groups[1].Value == "num_subnum_index");
+				removedFks.AddRange(parsedTable.ForeignKeys);
+				parsedTable.ForeignKeys.Clear();
 
-				if (isAsagi)
-				{
-					createStatement = keyRegex.Replace(createStatement, "");
-					// we can't change primary key because AUTO_INCREMENT has to be on the primary key iirc
-					// createStatement = primaryKeyRegex.Replace(createStatement, "PRIMARY KEY (`num`, `subnum`)");
-					createStatement = primaryKeyRegex.Replace(createStatement, "PRIMARY KEY (`doc_id`), KEY `custom_num` (`num`), KEY `custom_threadnum_num` (`thread_num`, `num`)");
-				}
+				createStatement = parsedTable.ToCreateTableSql();
 			}
 
 			AssertToken(JsonToken.PropertyName, "columns");
@@ -93,12 +132,12 @@ internal class JsonImporter : BaseImporter
 			AssertToken(JsonToken.PropertyName, "rows");
 			AssertToken(JsonToken.StartArray);
 
-			if (sourceTables == null
-				|| sourceTables.Length == 0
-				|| sourceTables.Any(x => x == "*")
-				|| sourceTables.Any(x => tableName.Equals(x, StringComparison.OrdinalIgnoreCase)))
+			if (options.SourceTables == null
+				|| options.SourceTables.Length == 0
+				|| options.SourceTables.Any(x => x == "*")
+				|| options.SourceTables.Any(x => tableName.Equals(x, StringComparison.OrdinalIgnoreCase)))
 			{
-				if (!noCreate)
+				if (!options.NoCreate)
 					await using (var connection = createConnection())
 					{
 						using var command = connection.CreateCommand();
@@ -115,7 +154,7 @@ internal class JsonImporter : BaseImporter
 					{
 						while (true)
 						{
-							var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(jsonReader, tableName, columns, insertIgnore);
+							var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(jsonReader, tableName, columns, options.InsertIgnore);
 
 							reportRowCount(rowCount);
 
@@ -136,6 +175,23 @@ internal class JsonImporter : BaseImporter
 
 					channel.Writer.Complete();
 				});
+
+				if (options.DeferIndexes)
+				{
+					foreach (var index in removedIndexes)
+					{
+						await indexQueue.Writer.WriteAsync((
+							$"Creating index {tableName}.{index.Name}...",
+							$"ALTER TABLE `{tableName}` ADD {index.ToSql()};"));
+					}
+
+					foreach (var fk in removedFks)
+					{
+						await indexQueue.Writer.WriteAsync((
+							$"Creating foreign key {tableName}.{fk.Name}...",
+							$"ALTER TABLE `{tableName}` ADD {fk.ToSql()};"));
+					}
+				}
 			}
 			else
 			{
@@ -164,6 +220,11 @@ internal class JsonImporter : BaseImporter
 		}
 
 		while (await ProcessTable(jsonReader)) { }
+
+		indexQueue.Writer.Complete();
+
+		if (reindexTask != null)
+			await reindexTask;
 	}
 
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);

@@ -8,6 +8,17 @@ using MySqlConnector;
 
 namespace mysqlchump.Import;
 
+internal class ImportOptions
+{
+	public bool AggressiveUnsafe { get; set; }
+	public string[] SourceTables { get; set; }
+	public bool InsertIgnore { get; set; }
+	public bool UpgradeTokuDb { get; set; }
+	public bool NoCreate { get; set; }
+	public bool DeferIndexes { get; set; }
+	public bool StripIndexes { get; set; }
+}
+
 internal class BaseImporter
 {
 	protected async Task DoParallelInserts(int maxConcurrency, ulong? approxCount, string tableName,
