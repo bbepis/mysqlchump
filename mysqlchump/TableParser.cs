@@ -436,20 +436,22 @@ public class CreateTableParser
 		{
 			// UNIQUE KEY `key_name` (`col1`, `col2`)
 			_currentToken = _tokenizer.GetNextToken();
+			Expect(TokenType.Identifier, "KEY");
+			_currentToken = _tokenizer.GetNextToken();
+
 			string keyName = null;
 			if (_currentToken.Type == TokenType.Identifier)
 			{
 				keyName = ParseIdentifier();
 			}
 
-			Expect(TokenType.LeftBrace);
-			_currentToken = _tokenizer.GetNextToken();
-
 			var index = new Index
 			{
 				Type = IndexType.Unique,
 				Name = keyName
 			};
+
+			Expect(TokenType.LeftBrace);
 
 			index.Columns.AddRange(ParseColumnList());
 
