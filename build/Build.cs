@@ -8,7 +8,7 @@ class Build : NukeBuild
 {
 	public static int Main() => Execute<Build>(x => x.Package);
 	
-	readonly string version = "1.6";
+	readonly string version = "1.7";
 
 	AbsolutePath BuildOutputDirectory => RootDirectory / "build-output";
 
