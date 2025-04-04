@@ -79,21 +79,19 @@ internal class JsonImporter : BaseImporter
 
 			var parsedTable = CreateTableParser.Parse(createStatement);
 
-			if (options.UpgradeTokuDb)
+			if (options.SetInnoDB)
 			{
-				if (parsedTable.Options.TryGetValue("ENGINE", out var engine)
-					&& engine.Equals("TokuDB", StringComparison.OrdinalIgnoreCase))
-				{
-					parsedTable.Options["ENGINE"] = "InnoDB";
-				}
+				parsedTable.Options["ENGINE"] = "InnoDB";
 
-				if (parsedTable.Options.TryGetValue("COMPRESSION", out var compression)
-					&& compression.StartsWith("tokudb_", StringComparison.OrdinalIgnoreCase))
-				{
-					parsedTable.Options.Remove("COMPRESSION");
+				parsedTable.Options.Remove("COMPRESSION"); // tokudb
+				parsedTable.Options["ROW_FORMAT"] = "DYNAMIC";
 
-					parsedTable.Options["ROW_FORMAT"] = "DYNAMIC";
-				}
+				createStatement = parsedTable.ToCreateTableSql();
+			}
+
+			if (options.SetCompressed)
+			{
+				parsedTable.Options["ROW_FORMAT"] = "COMPRESSED";
 
 				createStatement = parsedTable.ToCreateTableSql();
 			}
