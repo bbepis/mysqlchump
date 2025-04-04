@@ -14,7 +14,7 @@ internal class JsonImporter : BaseImporter
 {
 	public async Task ImportAsync(Stream dataStream, Func<MySqlConnection> createConnection, ImportOptions options)
 	{
-		var indexQueue = Channel.CreateUnbounded<(string text, string sql)>();
+		var indexQueue = Channel.CreateUnbounded<(string text, string tableName, string indexName, string sql)>();
 
 		Task reindexTask = null;
 
@@ -30,12 +30,26 @@ internal class JsonImporter : BaseImporter
 					command.CommandText = "SET FOREIGN_KEY_CHECKS = 0;";
 					await command.ExecuteNonQueryAsync();
 					
-					await foreach (var (text, sql) in indexQueue.Reader.ReadAllAsync())
+					await foreach (var (text, tableName, indexName, sql) in indexQueue.Reader.ReadAllAsync())
 					{
-						Console.Error.WriteLine(text);
-						command.CommandText = sql;
+						command.CommandTimeout = 9999999;
 
-						await command.ExecuteNonQueryAsync();
+						// check if index exists first
+						command.CommandText = $@"SELECT COUNT(*)
+							FROM INFORMATION_SCHEMA.STATISTICS
+							WHERE table_schema = '{connection.Database}'
+							  AND table_name = '{tableName}'
+							  AND INDEX_NAME = '{indexName}';";
+
+						var exists = (long)await command.ExecuteScalarAsync();
+
+						if (exists <= 0)
+						{
+							Console.Error.WriteLine(text);
+							command.CommandText = sql;
+
+							await command.ExecuteNonQueryAsync();
+						}
 					}
 
 					command.CommandText = "SET FOREIGN_KEY_CHECKS = 1;";
@@ -141,9 +155,23 @@ internal class JsonImporter : BaseImporter
 						using var command = connection.CreateCommand();
 
 						command.CommandTimeout = 9999999;
-						command.CommandText = createStatement;
 
-						await command.ExecuteNonQueryAsync();
+						// check if table exists first
+						command.CommandText = $@"SELECT COUNT(*)
+							FROM information_schema.TABLES
+							WHERE TABLE_SCHEMA = '{connection.Database}' AND TABLE_NAME = '{tableName}'";
+
+						var exists = (long)await command.ExecuteScalarAsync();
+
+						if (exists != 0)
+						{
+							Console.Error.WriteLine($"Table '{tableName}' already exists, so it will not be created.");
+						}
+						else
+						{
+							command.CommandText = createStatement;
+							await command.ExecuteNonQueryAsync();
+						}
 					}
 
 				await DoParallelInserts(12, approxCount, tableName, createConnection, async (channel, reportRowCount) =>
@@ -180,6 +208,8 @@ internal class JsonImporter : BaseImporter
 					{
 						await indexQueue.Writer.WriteAsync((
 							$"Creating index {tableName}.{index.Name}...",
+							tableName,
+							index.Name,
 							$"ALTER TABLE `{tableName}` ADD {index.ToSql()};"));
 					}
 
@@ -187,6 +217,8 @@ internal class JsonImporter : BaseImporter
 					{
 						await indexQueue.Writer.WriteAsync((
 							$"Creating foreign key {tableName}.{fk.Name}...",
+							tableName,
+							fk.Name,
 							$"ALTER TABLE `{tableName}` ADD {fk.ToSql()};"));
 					}
 				}
