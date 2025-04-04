@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using static System.Runtime.InteropServices.JavaScript.JSType;
 
 namespace mysqlchump;
 
@@ -62,14 +63,14 @@ public class Column
 {
 	public string Name { get; set; }
 	public string DataType { get; set; } // e.g., VARCHAR(255), ENUM('a','b')
-	public bool IsNullable { get; set; } = true;
-	public bool IsPrimaryKey { get; set; } = false;
-	public string DefaultValue { get; set; } = null;
-	public bool IsAutoIncrement { get; set; } = false;
-	public bool Unsigned { get; set; } = false;
-	public string CharacterSet { get; set; } = null;
-	public string Collation { get; set; } = null;
-	public string Extra { get; set; } = null; // Additional column options
+	public bool IsNullable { get; set; }
+	public bool IsPrimaryKey { get; set; }
+	public string DefaultValue { get; set; }
+	public bool IsAutoIncrement { get; set; }
+	public bool Unsigned { get; set; }
+	public string CharacterSet { get; set; }
+	public string Collation { get; set; }
+	public string Extra { get; set; } // Additional column options
 
 	/// <summary>
 	/// Converts the Column object to its SQL definition.
@@ -120,9 +121,30 @@ public class Column
 /// </summary>
 public class Index
 {
+	public class IndexColumn
+	{
+		public string ColumnName { get; set; }
+		public int? PrefixLength { get; set; }
+
+		public IndexColumn() { }
+
+		public IndexColumn(string name, int? prefixLength = null)
+		{
+			ColumnName = name;
+			PrefixLength = prefixLength;
+		}
+
+		public override string ToString()
+		{
+			return $"`{ColumnName}`{(PrefixLength.HasValue ? $"({PrefixLength})" : "")}";
+		}
+
+		public static implicit operator IndexColumn(string columnName) => new IndexColumn(columnName);
+	}
+
 	public string Name { get; set; } // e.g., PRIMARY, UNIQUE key name
 	public IndexType Type { get; set; }
-	public List<string> Columns { get; } = new List<string>();
+	public List<IndexColumn> Columns { get; } = new List<IndexColumn>();
 
 	public string ToSql()
 	{
@@ -141,7 +163,7 @@ public class Index
 		}
 
 		sb.Append("(");
-		sb.Append(string.Join(", ", Columns.Select(c => $"`{c}`")));
+		sb.Append(string.Join(", ", Columns.Select(x => x.ToString())));
 		sb.Append(")");
 		return sb.ToString();
 	}
@@ -187,9 +209,9 @@ public class ForeignKey
 /// </summary>
 public enum IndexType
 {
+	Regular,
 	Primary,
-	Unique,
-	Index
+	Unique
 }
 
 public class CreateTableParser
@@ -322,7 +344,8 @@ public class CreateTableParser
 		var column = new Column
 		{
 			Name = columnName,
-			DataType = dataType
+			DataType = dataType,
+			IsNullable = true
 		};
 
 		// Parse column constraints (NULL/NOT NULL, DEFAULT, AUTO_INCREMENT, etc.)
@@ -332,6 +355,7 @@ public class CreateTableParser
 		{
 			if (_currentToken.Type == TokenType.Null)
 			{
+				// redundant
 				column.IsNullable = true;
 				_currentToken = _tokenizer.GetNextToken();
 				continue;
@@ -481,7 +505,7 @@ public class CreateTableParser
 
 			var index = new Index
 			{
-				Type = IndexType.Index,
+				Type = IndexType.Regular,
 				Name = keyName
 			};
 
@@ -505,7 +529,7 @@ public class CreateTableParser
 				Name = constraintName
 			};
 
-			fk.Columns.AddRange(ParseColumnList());
+			fk.Columns.AddRange(ParseColumnList().Select(x => x.ColumnName));
 
 			Expect(TokenType.Identifier, "REFERENCES");
 			_currentToken = _tokenizer.GetNextToken();
@@ -515,7 +539,7 @@ public class CreateTableParser
 
 			Expect(TokenType.LeftBrace);
 			//_currentToken = _tokenizer.GetNextToken();
-			fk.ReferenceColumns.AddRange(ParseColumnList());
+			fk.ReferenceColumns.AddRange(ParseColumnList().Select(x => x.ColumnName));
 			//Expect(TokenType.RightBrace);
 			//_currentToken = _tokenizer.GetNextToken();
 
@@ -581,16 +605,29 @@ public class CreateTableParser
 	/// <summary>
 	/// Parses a list of column names enclosed in parentheses.
 	/// </summary>
-	private List<string> ParseColumnList()
+	private List<Index.IndexColumn> ParseColumnList()
 	{
-		var columns = new List<string>();
+		var columns = new List<Index.IndexColumn>();
 		Expect(TokenType.LeftBrace);
 		_currentToken = _tokenizer.GetNextToken();
 
 		while (_currentToken.Type != TokenType.RightBrace && _currentToken.Type != TokenType.EOF)
 		{
-			string column = ParseIdentifier();
+			Index.IndexColumn column = ParseIdentifier();
 			columns.Add(column);
+
+			// check for prefix length
+			if (_currentToken.Type == TokenType.LeftBrace)
+			{
+				_currentToken = _tokenizer.GetNextToken();
+				Expect(TokenType.Number);
+
+				column.PrefixLength = int.Parse(_currentToken.Value);
+
+				_currentToken = _tokenizer.GetNextToken();
+				Expect(TokenType.RightBrace);
+				_currentToken = _tokenizer.GetNextToken();
+			}
 
 			if (_currentToken.Type == TokenType.Comma)
 			{
