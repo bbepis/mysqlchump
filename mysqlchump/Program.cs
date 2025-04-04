@@ -104,7 +104,7 @@ class Program
 		{
 			connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, inputFormatOption, importTableOption, parallelOption,
 			insertIgnoreOption, csvImportColumnsOption, csvUseHeadersOption, csvFixInvalidMysqlOption, inputFileArgument, importNoCreationOption, aggressiveUnsafeOption,
-			setInnoDbOption, sourceTablesOption, deferIndexesOption, stripIndexesOption
+			setInnoDbOption, setCompressedOption, sourceTablesOption, deferIndexesOption, stripIndexesOption
 		};
 
 		importCommand.SetHandler(async context =>
