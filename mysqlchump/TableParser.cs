@@ -205,7 +205,16 @@ public class CreateTableParser
 
 	public static Table Parse(string tableSql)
 	{
-		return new CreateTableParser(new Tokenizer(new MemoryStream(Encoding.UTF8.GetBytes(tableSql)))).Parse();
+		try
+		{
+			return new CreateTableParser(new Tokenizer(new MemoryStream(Encoding.UTF8.GetBytes(tableSql)))).Parse();
+		}
+		catch
+		{
+			Console.Error.WriteLine($"Failed to parse SQL:");
+			Console.Error.WriteLine(tableSql);
+			throw;
+		}
 	}
 
 	/// <summary>
