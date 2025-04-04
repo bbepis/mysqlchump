@@ -1,11 +1,13 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
-# Visual Studio 15
-VisualStudioVersion = 15.0.28307.779
+# Visual Studio Version 17
+VisualStudioVersion = 17.13.35825.156 d17.13
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "mysqlchump", "mysqlchump\mysqlchump.csproj", "{20BCDC9C-D20A-4407-9FCB-C01151A6090E}"
 EndProject
 Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "_build", "build\_build.csproj", "{D07B3C3A-F220-44C7-999E-3B0BA23AB10E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "mysqlchump.Tests", "mysqlchump.Tests\mysqlchump.Tests.csproj", "{8B8C9B69-591E-4042-BA76-6F12994DFD8B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -13,12 +15,16 @@ Global
 		Release|Any CPU = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{D07B3C3A-F220-44C7-999E-3B0BA23AB10E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
-		{D07B3C3A-F220-44C7-999E-3B0BA23AB10E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{20BCDC9C-D20A-4407-9FCB-C01151A6090E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
 		{20BCDC9C-D20A-4407-9FCB-C01151A6090E}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{20BCDC9C-D20A-4407-9FCB-C01151A6090E}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{20BCDC9C-D20A-4407-9FCB-C01151A6090E}.Release|Any CPU.Build.0 = Release|Any CPU
+		{D07B3C3A-F220-44C7-999E-3B0BA23AB10E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{D07B3C3A-F220-44C7-999E-3B0BA23AB10E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8B8C9B69-591E-4042-BA76-6F12994DFD8B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8B8C9B69-591E-4042-BA76-6F12994DFD8B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8B8C9B69-591E-4042-BA76-6F12994DFD8B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8B8C9B69-591E-4042-BA76-6F12994DFD8B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
