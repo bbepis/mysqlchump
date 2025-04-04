@@ -202,12 +202,31 @@ start:
 				return ReadString();
 			// Handle other cases...
 			default:
+				// single-line comment
 				if (current.Value == '-' && PeekChar(1) == '-')
 				{
 					while (true)
 					{
 						var read = ReadChar();
-						if (read == null ||  read.Value == '\n')
+						if (read == null || read.Value == '\n')
+						{
+							ReadChar();
+							break;
+						}
+					}
+
+					goto start;
+				}
+
+				// multi-line comment
+				if (current.Value == '/' && PeekChar(1) == '*')
+				{
+					ReadChar();
+
+					while (true)
+					{
+						var read = ReadChar();
+						if (read == null || (read.Value == '*' && PeekChar() == '/'))
 						{
 							ReadChar();
 							break;
