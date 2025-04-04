@@ -1,25 +1,22 @@
 using System.IO;
 using Nuke.Common;
 using Nuke.Common.IO;
-using Nuke.Common.Tooling;
 using Nuke.Common.Tools.DotNet;
-using Nuke.Common.Tools.Npm;
 using static Nuke.Common.IO.FileSystemTasks;
 
 class Build : NukeBuild
 {
 	public static int Main() => Execute<Build>(x => x.Package);
 	
-	readonly string version = "1.3";
+	readonly string version = "1.6";
 
 	AbsolutePath BuildOutputDirectory => RootDirectory / "build-output";
 
-	readonly string[] publishRuntimes =
+	readonly (string name, string runtimeId, bool selfContained)[] publishRuntimes =
 	{
-		"win-x64",
-		"linux-x64",
-		"linux-x64-bflat",
-		"portable"
+		("win-x64", "win-x64", false),
+		("linux-x64", "linux-x64", false),
+		("linux-x64-selfcontained", "linux-x64", true)
 	};
 
 	Target Clean => _ => _
@@ -31,30 +28,25 @@ class Build : NukeBuild
 
 	void DoPublish(string prefix, string projectPath, bool package)
 	{
-		foreach (string runtimeName in publishRuntimes)
+		foreach (var runtime in publishRuntimes)
 		{
-			Serilog.Log.Information($"Publishing {prefix} {runtimeName}");
+			Serilog.Log.Information($"Publishing {prefix} {runtime.name}");
 
 			var prefixFolder = BuildOutputDirectory / prefix;
-			var outputFolder = prefixFolder / runtimeName;
-			var outputZip = BuildOutputDirectory / $"{prefix}-{version}-{runtimeName}.zip";
+			var outputFolder = prefixFolder / runtime.name;
+			var outputZip = BuildOutputDirectory / $"{prefix}-{version}-{runtime.name}.zip";
 
 			
 			EnsureCleanDirectory(outputFolder);
 
-			if (runtimeName == "linux-x64-bflat")
-			{
-				//ProcessTasks.StartProcess(new BflatToolSettings())
-			}
-			else
-			{
-				DotNetTasks.DotNetPublish(x => x
-					.SetProject(projectPath)
-					.SetOutput(outputFolder)
-					.SetConfiguration("Release")
-					.SetRuntime(runtimeName != "portable" ? runtimeName : null)
-					.SetSelfContained(runtimeName != "portable"));
-			}
+			DotNetTasks.DotNetPublish(x => x
+				.SetProject(projectPath)
+				.SetOutput(outputFolder)
+				.SetConfiguration("Release")
+				.SetRuntime(runtime.runtimeId)
+				.SetPublishSingleFile(true)
+				.SetPublishTrimmed(runtime.selfContained)
+				.SetSelfContained(runtime.selfContained));
 
 			if (package)
 			{
@@ -79,7 +71,7 @@ class Build : NukeBuild
 		.Executes(() =>
 		{
 			EnsureExistingDirectory(BuildOutputDirectory);
-			DoPublish("hayden-cli", "./Hayden/Hayden.csproj", true);
+			DoPublish("mysqlchump", "./mysqlchump/mysqlchump.csproj", true);
 		});
 }
 
