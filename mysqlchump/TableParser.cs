@@ -211,7 +211,8 @@ public enum IndexType
 {
 	Regular,
 	Primary,
-	Unique
+	Unique,
+	Fulltext
 }
 
 public class CreateTableParser
@@ -269,7 +270,12 @@ public class CreateTableParser
 			if (_currentToken.Type == TokenType.Identifier)
 			{
 				string identifier = _currentToken.Value.ToUpperInvariant();
-				if (identifier == "PRIMARY" || identifier == "UNIQUE" || identifier == "KEY" || identifier == "CONSTRAINT" || identifier == "FOREIGN")
+				if (identifier == "PRIMARY"
+					|| identifier == "UNIQUE"
+					|| identifier == "KEY"
+					|| identifier == "CONSTRAINT"
+					|| identifier == "FOREIGN"
+					|| identifier == "FULLTEXT")
 				{
 					ParseTableConstraint(table);
 				}
@@ -481,6 +487,31 @@ public class CreateTableParser
 			var index = new Index
 			{
 				Type = IndexType.Unique,
+				Name = keyName
+			};
+
+			Expect(TokenType.LeftBrace);
+
+			index.Columns.AddRange(ParseColumnList());
+
+			table.Indexes.Add(index);
+		}
+		else if (constraintType == "FULLTEXT")
+		{
+			// FULLTEXT KEY `key_name` (`col1`)
+			_currentToken = _tokenizer.GetNextToken();
+			Expect(TokenType.Identifier, "KEY");
+			_currentToken = _tokenizer.GetNextToken();
+
+			string keyName = null;
+			if (_currentToken.Type == TokenType.Identifier)
+			{
+				keyName = ParseIdentifier();
+			}
+
+			var index = new Index
+			{
+				Type = IndexType.Fulltext,
 				Name = keyName
 			};
 

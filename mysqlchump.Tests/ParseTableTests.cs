@@ -1,6 +1,6 @@
-using System;
-using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
+using NUnit.Framework.Legacy;
+using Assert = NUnit.Framework.Legacy.ClassicAssert;
 
 namespace mysqlchump.Tests;
 
@@ -428,6 +428,106 @@ public class ParseTableTests
 					{ "AUTO_INCREMENT", "227642182" },
 					{ "DEFAULT CHARSET", "utf8mb4" },
 					{ "COLLATE", "utf8mb4_0900_ai_ci" }
+				}
+			}),
+		new TableTestcase("table4",
+			@"CREATE TABLE IF NOT EXISTS `table4` (
+				`doc_id` int(10) unsigned NOT NULL AUTO_INCREMENT,
+				`num` int(10) unsigned NOT NULL,
+				`subnum` int(10) unsigned NOT NULL,
+				`thread_num` int(10) unsigned NOT NULL DEFAULT '0',
+				`media_filename` text,
+				`comment` text,
+				PRIMARY KEY (`doc_id`),
+				KEY `num_index` (`num`),
+				KEY `subnum_index` (`subnum`),
+				KEY `thread_num_index` (`thread_num`),
+				FULLTEXT KEY `media_filename_fulltext` (`media_filename`),
+				FULLTEXT KEY `comment_fulltext` (`comment`)
+			) ENGINE=MyISAM DEFAULT CHARSET=utf8mb4",
+			new Table
+			{
+				Name = "table4",
+				Columns =
+				{
+					new Column
+					{
+						Name = "doc_id",
+						DataType = "int(10)",
+						IsAutoIncrement = true,
+						Unsigned = true
+					},
+					new Column
+					{
+						Name = "num",
+						DataType = "int(10)",
+						Unsigned = true
+					},
+					new Column
+					{
+						Name = "subnum",
+						DataType = "int(10)",
+						Unsigned = true
+					},
+					new Column
+					{
+						Name = "thread_num",
+						DataType = "int(10)",
+						DefaultValue = "\'0\'",
+						Unsigned = true
+					},
+					new Column
+					{
+						Name = "media_filename",
+						DataType = "text",
+						IsNullable = true
+					},
+					new Column
+					{
+						Name = "comment",
+						DataType = "text",
+						IsNullable = true
+					}
+				},
+				Indexes =
+				{
+					new Index
+					{
+						Type = IndexType.Primary,
+						Columns = { "doc_id" }
+					},
+					new Index
+					{
+						Name = "num_index",
+						Columns = { "num" }
+					},
+					new Index
+					{
+						Name = "subnum_index",
+						Columns = { "subnum" }
+					},
+					new Index
+					{
+						Name = "thread_num_index",
+						Columns = { "thread_num" }
+					},
+					new Index
+					{
+						Name = "media_filename_fulltext",
+						Type = IndexType.Fulltext,
+						Columns = { "media_filename" }
+					},
+					new Index
+					{
+						Name = "comment_fulltext",
+						Type = IndexType.Fulltext,
+						Columns = { "comment" }
+					}
+				},
+				Options =
+				{
+					{ "ENGINE", "MyISAM" },
+					{ "DEFAULT CHARSET", "utf8mb4" }
 				}
 			}),
 	];
