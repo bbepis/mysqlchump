@@ -84,6 +84,7 @@ class Program
 		rootCommand.Add(exportCommand);
 		
 		var inputFormatOption = new Option<InputFormatEnum>(new[] { "--input-format", "-f" }, () => InputFormatEnum.mysqlForceBatch, "The input format to use when importing.");
+		var importMechanismOption = new Option<ImportMechanism>(new[] { "--import-mechanism", "-m" }, () => ImportMechanism.SqlStatements, "The import mechanism to use when importing.");
 		var importTableOption = new Option<string>(new[] { "--table", "-t" }, "The table to import to. Only relevant for CSV data");
 		var sourceTablesOption = new Option<string[]>(new[] { "--source-table", "-T" }, "(JSON only) List of tables to import from, from a dump that contains multiple tables");
 		var parallelOption = new Option<byte>(new[] { "--parallel", "-j" }, () => 12, "The amount of parallel insert threads to use.");
@@ -102,7 +103,7 @@ class Program
 		
 		var importCommand = new Command("import", "Imports data to a database")
 		{
-			connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, inputFormatOption, importTableOption, parallelOption,
+			connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, inputFormatOption, importMechanismOption, importTableOption, parallelOption,
 			insertIgnoreOption, csvImportColumnsOption, csvUseHeadersOption, csvFixInvalidMysqlOption, inputFileArgument, importNoCreationOption, aggressiveUnsafeOption,
 			setInnoDbOption, setCompressedOption, sourceTablesOption, deferIndexesOption, stripIndexesOption
 		};
@@ -121,11 +122,13 @@ class Program
 				csBuilder.Database = result.GetValueForOption(databaseOption);
 				csBuilder.UserID = result.GetValueForOption(usernameOption);
 				csBuilder.Password = result.GetValueForOption(passwordOption);
+				csBuilder.AllowLoadLocalInfile = true;
 
 				connectionString = csBuilder.ToString();
 			}
 
 			var inputFormat = result.GetValueForOption(inputFormatOption);
+			var importMechanism = result.GetValueForOption(importMechanismOption);
 			var importTable = result.GetValueForOption(importTableOption);
 			var sourceTables = result.GetValueForOption(sourceTablesOption);
 			
@@ -162,8 +165,10 @@ class Program
 			Task<int> RunImport(string filename) =>
 				ImportMainAsync(connectionString, inputFormat, filename, importTable, sourceTables,
 					(csvUseHeaders || string.IsNullOrWhiteSpace(csvColumns)) ? null : csvColumns.Split(',').Select(x => x.Trim()).ToArray(),
-					csvFixInvalidMysql, parallel, csvUseHeaders, new ImportOptions
+					csvFixInvalidMysql, csvUseHeaders, new ImportOptions
 					{
+						ImportMechanism = importMechanism,
+						ParallelThreads = parallel,
 						AggressiveUnsafe = aggressiveUnsafe,
 						InsertIgnore = insertIgnore,
 						NoCreate = noCreate,
@@ -335,7 +340,7 @@ class Program
 	}
 
 	static async Task<int> ImportMainAsync(string connectionString, InputFormatEnum inputFormat, string inputLocation,
-		string table, string[] sourceTables, string[] csvColumns, bool csvFixInvalidMysql, int parallelCount,
+		string table, string[] sourceTables, string[] csvColumns, bool csvFixInvalidMysql,
 		bool csvUseHeaders, ImportOptions options)
 	{
 		bool stdin = inputLocation == "-";
@@ -424,7 +429,7 @@ class Program
 			else if (inputFormat == InputFormatEnum.csv)
 			{
 				var importer = new CsvImporter();
-				await importer.ImportAsync(currentStream, table, csvColumns, csvFixInvalidMysql, parallelCount, csvUseHeaders, options.InsertIgnore, createConnection);
+				await importer.ImportAsync(currentStream, table, csvColumns, csvFixInvalidMysql, options.ParallelThreads, csvUseHeaders, options.InsertIgnore, createConnection);
 			}
 			else if (inputFormat == InputFormatEnum.json)
 			{

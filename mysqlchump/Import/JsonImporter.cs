@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading.Tasks;
 using Newtonsoft.Json;
 using System.Threading.Channels;
+using System.IO.Pipelines;
 
 namespace mysqlchump.Import;
 
@@ -174,33 +175,102 @@ internal class JsonImporter : BaseImporter
 						}
 					}
 
-				await DoParallelInserts(12, approxCount, tableName, createConnection, async (channel, reportRowCount) =>
+				if (options.ImportMechanism == ImportMechanism.SqlStatements)
 				{
-					try
+					await DoParallelSqlInserts(options.ParallelThreads, approxCount, tableName, createConnection, async (channel, reportRowCount) =>
 					{
-						while (true)
+						try
 						{
-							var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(jsonReader, tableName, columns, options.InsertIgnore);
+							while (true)
+							{
+								var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(jsonReader, tableName, columns, options.InsertIgnore);
 
-							reportRowCount(rowCount);
+								reportRowCount(rowCount);
 
-							if (insertQuery == null)
-								break;
+								if (insertQuery == null)
+									break;
 
-							await channel.Writer.WriteAsync(insertQuery);
+								await channel.Writer.WriteAsync(insertQuery);
 
-							if (!canContinue)
-								break;
+								if (!canContinue)
+									break;
+							}
 						}
-					}
-					catch (Exception ex)
-					{
-						Console.Error.WriteLine($"Error when reading data source @ L{jsonReader.LineNumber}:{jsonReader.LinePosition}");
-						Console.Error.WriteLine(ex.ToString());
-					}
+						catch (Exception ex)
+						{
+							Logging.WriteLine($"Error when reading data source @ L{jsonReader.LineNumber}:{jsonReader.LinePosition}");
+							Logging.WriteLine(ex.ToString());
+						}
 
-					channel.Writer.Complete();
-				});
+						channel.Writer.Complete();
+					});
+				}
+				else if (options.ImportMechanism == ImportMechanism.LoadDataInfile)
+				{
+					await DoParallelCsvImports(options, approxCount, tableName, columns, createConnection, async (pipeWriters, reportRowCount) =>
+					{
+						var flushTasks = new Task[pipeWriters.Length];
+
+						try
+						{
+							while (true)
+							{
+								int writerIndex = 0;
+								PipeWriter writer;
+
+								while (true)
+								{
+									bool found = false;
+									for (int i = 0; i < pipeWriters.Length; i++)
+									{
+										if (flushTasks[i] != null && flushTasks[i].IsFaulted)
+											Console.WriteLine(flushTasks[i].Exception);
+
+										if (flushTasks[i] == null || flushTasks[i].IsCompleted)
+										{
+											writerIndex = i;
+											found = true;
+											break;
+										}
+									}
+
+									if (found)
+									{
+										writer = pipeWriters[writerIndex];
+										break;
+									}
+
+									// all writers are currently busy.
+									await Task.Delay(2);
+								}
+
+								var (rowCount, canContinue) = WriteBatchCsvPipe(jsonReader, writer, tableName, columns);
+
+								if (rowCount == 0)
+									break;
+
+								//await writer.FlushAsync();
+								flushTasks[writerIndex] = Task.Run(async () => await writer.FlushAsync());
+
+								reportRowCount(rowCount);
+
+								if (!canContinue)
+									break;
+							}
+
+							foreach (var writer in pipeWriters)
+								await writer.CompleteAsync();
+						}
+						catch (Exception ex)
+						{
+							Logging.WriteLine($"Error when reading data source @ L{jsonReader.LineNumber}:{jsonReader.LinePosition}");
+							Logging.WriteLine(ex.ToString());
+
+							foreach (var writer in pipeWriters)
+								await writer.CompleteAsync(ex);
+						}
+					});
+				}
 
 				if (options.DeferIndexes)
 				{
@@ -323,5 +393,110 @@ internal class JsonImporter : BaseImporter
 		queryBuilder.Append(';');
 
 		return (canContinue, queryBuilder.ToString(), count);
+	}
+
+	private (int rows, bool canContinue) WriteBatchCsvPipe(JsonTextReader jsonReader, PipeWriter pipeWriter, string tableName, List<(string columnName, string type)> columns)
+	{
+		bool needsNewline = false;
+		bool canContinue = true;
+
+		const int minimumSpanSize = 4 * 1024 * 1024;
+
+		var span = pipeWriter.GetSpan(minimumSpanSize);
+		var currentPosition = 0;
+		//var writtenSinceFlush = 0;
+		int rows = 0;
+
+		var encoding = new UTF8Encoding(false);
+
+		void WriteString(ReadOnlySpan<char> data, Span<byte> span)
+		{
+			// UTF-8 max bytes per character is 4
+			var maxByteLength = data.Length * 4;
+
+			if (span.Length - currentPosition < maxByteLength)
+			{
+				if (currentPosition > 0)
+					pipeWriter.Advance(currentPosition);
+
+				span = pipeWriter.GetSpan(minimumSpanSize);
+				//writtenSinceFlush += currentPosition;
+				currentPosition = 0;
+
+				//if (writtenSinceFlush > 10 * 1024 * 1024)
+				//	Task.Run(() => pipeWriter.FlushAsync()).Wait();
+			}
+
+			currentPosition += encoding.GetBytes(data, span.Slice(currentPosition));
+		}
+
+		while (true)
+		{
+			if (currentPosition >= 3 * 1024 * 1024)
+				break;
+			//if (rows >= 2000)
+			//	break;
+
+			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.StartArray)
+			{
+				canContinue = false;
+				break;
+			}
+			
+			WriteString("\n", span);
+
+			needsNewline = true;
+
+			for (int columnNum = 0; columnNum < columns.Count; columnNum++)
+			{
+				if (!jsonReader.Read() || jsonReader.TokenType == JsonToken.EndArray)
+					throw new InvalidDataException("Row ends prematurely");
+
+				if (columnNum > 0)
+					WriteString(",", span);
+
+				object value = jsonReader.Value;
+
+				switch (jsonReader.TokenType)
+				{
+					case JsonToken.Null:
+						WriteString("\\N", span);
+						break;
+					case JsonToken.String:
+						// if (columns[columnNum].type == "BLOB")
+						WriteString($"\"{((string)value).Replace("\"", "\\\"")}\"", span);
+						break;
+					case JsonToken.Boolean:
+						WriteString((bool)value ? "TRUE" : "FALSE", span);
+						break;
+					case JsonToken.Date:
+						WriteString($"{(DateTime)value:yyyy-MM-dd HH:mm:ss}", span);
+						break;
+					case JsonToken.Integer:
+					case JsonToken.Float:
+						WriteString(value.ToString(), span);
+						break;
+					default:
+						if (columns[columnNum].type == "BLOB")
+						{
+							//WriteString(Utility.ByteArrayToString(Convert.FromBase64String((string)value)), span);
+							WriteString((string)value, span);
+							break;
+						}
+						else
+							throw new InvalidDataException($"Unknown token type: {jsonReader.TokenType}");
+				}
+			}
+
+			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.EndArray)
+				throw new InvalidDataException("Row ends prematurely");
+
+			rows++;
+		}
+
+		if (currentPosition > 0)
+			pipeWriter.Advance(currentPosition);
+
+		return (rows, canContinue);
 	}
 }

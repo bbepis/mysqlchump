@@ -49,7 +49,7 @@ internal class CsvImporter : BaseImporter
 			}
 		}
 
-		await DoParallelInserts(parallelCount, null, table, createConnection, async (channel, reportRowCount) =>
+		await DoParallelSqlInserts(parallelCount, null, table, createConnection, async (channel, reportRowCount) =>
 		{
 			try
 			{
