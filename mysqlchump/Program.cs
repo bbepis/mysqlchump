@@ -391,7 +391,16 @@ class Program
 
 					var reader = command.ExecuteReader();
 					while (reader.Read())
-						hasSuper |= reader.GetString(0).Contains("SUPER", StringComparison.OrdinalIgnoreCase);
+					{
+						var perms = reader.GetString(0);
+
+						if (perms.Contains("SUPER", StringComparison.OrdinalIgnoreCase)
+							|| perms.Contains("ALL PRIVILEGES", StringComparison.OrdinalIgnoreCase))
+						{
+							hasSuper = true;
+							break;
+						}
+					}
 					reader.Close();
 
 					if (!hasSuper)
