@@ -14,9 +14,6 @@ internal static class TopologicalSort
 {
 	public static string[] SortItems(TopologicalItem[] items)
 	{
-		foreach (var item in items)
-			Console.Error.WriteLine($"{item.Name} ({string.Join(',', item.Dependencies)})");
-
 		var dict = items.ToDictionary(x => x.Name);
 		var edgeCount = items.ToDictionary(x => x.Name, x => 
 			x.Dependencies
@@ -40,8 +37,6 @@ internal static class TopologicalSort
 						queue.Enqueue(dep);
 			}
 		}
-
-		Console.Error.WriteLine(string.Join(",", sortedList));
 
 		if (sortedList.Count != items.Length)
 			throw new Exception("Circular dependency detected");
