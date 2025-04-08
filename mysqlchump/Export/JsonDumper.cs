@@ -8,7 +8,6 @@ using System.Text;
 using System.Threading.Tasks;
 using MySqlConnector;
 using Newtonsoft.Json;
-using Newtonsoft.Json.Linq;
 
 namespace mysqlchump.Export;
 
