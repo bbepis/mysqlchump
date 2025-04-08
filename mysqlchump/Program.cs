@@ -514,7 +514,7 @@ WHERE
 			fkList.Add((reader.GetString(0), reader.GetString(1)));
 
 		var sorted = TopologicalSort.SortItems(tableNames
-			.Select(x => new TopologicalItem { Name = x, Dependencies = fkList.Where(fk => fk.table == x).Select(y => y.referencedTable).ToArray() })
+			.Select(x => new TopologicalItem { Name = x, Dependencies = fkList.Where(fk => fk.table == x && tableNames.Contains(fk.referencedTable)).Select(y => y.referencedTable).ToArray() })
 			.ToArray());
 
 		return sorted;
