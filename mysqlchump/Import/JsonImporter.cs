@@ -15,7 +15,7 @@ internal class JsonImporter : BaseImporter
 {
 	public async Task ImportAsync(Stream dataStream, Func<MySqlConnection> createConnection, ImportOptions options)
 	{
-		var indexQueue = Channel.CreateUnbounded<(string text, string tableName, string indexName, string sql)>();
+		var indexQueue = Channel.CreateUnbounded<(string text, string tableName, string indexName, bool isFk, string sql)>();
 
 		Task reindexTask = null;
 
@@ -31,18 +31,31 @@ internal class JsonImporter : BaseImporter
 					command.CommandText = "SET FOREIGN_KEY_CHECKS = 0;";
 					await command.ExecuteNonQueryAsync();
 					
-					await foreach (var (text, tableName, indexName, sql) in indexQueue.Reader.ReadAllAsync())
+					await foreach (var (text, tableName, indexName, isFk, sql) in indexQueue.Reader.ReadAllAsync())
 					{
 						command.CommandTimeout = 9999999;
 
 						// check if index exists first
-						command.CommandText = $@"SELECT COUNT(*)
-							FROM INFORMATION_SCHEMA.STATISTICS
-							WHERE table_schema = '{connection.Database}'
-							  AND table_name = '{tableName}'
-							  AND INDEX_NAME = '{indexName}';";
+						if (isFk)
+						{
+							command.CommandText = $@"
+SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
+WHERE CONSTRAINT_SCHEMA = '{connection.Database}'
+	AND TABLE_NAME = '{tableName}'
+	AND CONSTRAINT_NAME = '{indexName}';";
+						}
+						else
+						{
+							command.CommandText = $@"
+SELECT COUNT(*)
+FROM INFORMATION_SCHEMA.STATISTICS
+WHERE table_schema = '{connection.Database}'
+	AND table_name = '{tableName}'
+	AND INDEX_NAME = '{indexName}';";
+						}
 
-						var exists = (long)await command.ExecuteScalarAsync();
+							var exists = (long)await command.ExecuteScalarAsync();
 
 						if (exists <= 0)
 						{
@@ -280,6 +293,7 @@ internal class JsonImporter : BaseImporter
 							$"Creating index {tableName}.{index.Name}...",
 							tableName,
 							index.Name,
+							false,
 							$"ALTER TABLE `{tableName}` ADD {index.ToSql()};"));
 					}
 
@@ -289,6 +303,7 @@ internal class JsonImporter : BaseImporter
 							$"Creating foreign key {tableName}.{fk.Name}...",
 							tableName,
 							fk.Name,
+							true,
 							$"ALTER TABLE `{tableName}` ADD {fk.ToSql()};"));
 					}
 				}
