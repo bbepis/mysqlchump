@@ -165,6 +165,16 @@ internal class BaseImporter
 				}
 			});
 
+		var blobColumnDictionary = new Dictionary<string, string>();
+
+		foreach (var column in columns)
+		{
+			if (column.type == "BLOB" || column.type.Contains("BIT"))
+			{
+				blobColumnDictionary[column.columnName] = $"@var{blobColumnDictionary.Count + 1}";
+			}
+		}
+
 		var pipelineWriters = new PipeWriter[options.ParallelThreads];
 
 		var sendTasks = Enumerable.Range(0, options.ParallelThreads).Select(async i =>
@@ -184,12 +194,23 @@ internal class BaseImporter
                 EscapeCharacter = '\\',
                 LineTerminator = "\n",
                 FieldTerminator = ",",
-                TableName = tableName,
+                TableName = $"`{tableName}`",
 				NumberOfLinesToSkip = 1,
-                SourceStream = pipeline.Reader.AsStream(true),
+                SourceStream = pipeline.Reader.AsStream(true)
             };
 
-            loader.Columns.AddRange(columns.Select(x => x.columnName));
+            loader.Columns.AddRange(columns.Select(x => blobColumnDictionary.GetValueOrDefault(x.columnName, $"`{x.columnName}`")));
+            loader.Expressions.AddRange(blobColumnDictionary.Select(x =>
+			{
+				var type = columns.First(y => y.columnName == x.Key).type;
+
+				if (type == "BLOB")
+					return $"`{x.Key}`=FROM_BASE64({x.Value})";
+				if (type.Contains("BIT"))
+					return $"`{x.Key}`=CAST({x.Value} as signed)";
+
+				throw new Exception("Unexpected CSV type conversion");
+			}));
 
             Task sendCommand(string commandText)
             {

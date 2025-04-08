@@ -397,14 +397,12 @@ internal class JsonImporter : BaseImporter
 
 	private (int rows, bool canContinue) WriteBatchCsvPipe(JsonTextReader jsonReader, PipeWriter pipeWriter, string tableName, List<(string columnName, string type)> columns)
 	{
-		bool needsNewline = false;
 		bool canContinue = true;
 
 		const int minimumSpanSize = 4 * 1024 * 1024;
 
 		var span = pipeWriter.GetSpan(minimumSpanSize);
 		var currentPosition = 0;
-		//var writtenSinceFlush = 0;
 		int rows = 0;
 
 		var encoding = new UTF8Encoding(false);
@@ -430,6 +428,78 @@ internal class JsonImporter : BaseImporter
 			currentPosition += encoding.GetBytes(data, span.Slice(currentPosition));
 		}
 
+		void SanitizeAndWrite(string input, Span<byte> span)
+		{
+			bool requiresEscaping = false;
+			int len = input.Length;
+			for (int i = 0; i < len; i++)
+			{
+				char c = input[i];
+				if (c == '"' || c == '\\' || c == '\0' || c == '\n' || c == ',')
+				{
+					requiresEscaping = true;
+					break;
+				}
+			}
+
+			if (!requiresEscaping)
+			{
+				WriteString(input, span);
+				return;
+			}
+
+			WriteString("\"", span);
+
+			int start = 0;
+
+			void Flush(int i, Span<byte> span)
+			{
+				if (i > start)
+					WriteString(input.AsSpan(start, i - start), span);
+			}
+
+			for (int i = 0; i < len; i++)
+			{
+				char c = input[i];
+
+				switch (c)
+				{
+					case '\r':
+						if (i + 1 < len && input[i + 1] == '\n')
+						{
+							Flush(i, span);
+							WriteString("\\\n", span);
+							i++;
+							start = i + 1;
+						}
+						break;
+					case '\n':
+						Flush(i, span);
+						WriteString("\\\n", span);
+						start = i + 1;
+						break;
+					case '"':
+						Flush(i, span);
+						WriteString("\\\"", span);
+						start = i + 1;
+						break;
+					case '\0':
+						Flush(i, span);
+						WriteString("\\0", span);
+						start = i + 1;
+						break;
+					case '\\':
+						Flush(i, span);
+						WriteString("\\\\", span);
+						start = i + 1;
+						break;
+				}
+			}
+
+			Flush(len, span);
+			WriteString("\"", span);
+		}
+
 		while (true)
 		{
 			if (currentPosition >= 3 * 1024 * 1024)
@@ -444,8 +514,6 @@ internal class JsonImporter : BaseImporter
 			}
 			
 			WriteString("\n", span);
-
-			needsNewline = true;
 
 			for (int columnNum = 0; columnNum < columns.Count; columnNum++)
 			{
@@ -464,16 +532,17 @@ internal class JsonImporter : BaseImporter
 						break;
 					case JsonToken.String:
 						// if (columns[columnNum].type == "BLOB")
-						WriteString($"\"{((string)value).Replace("\"", "\\\"")}\"", span);
+						SanitizeAndWrite((string)value, span);
 						break;
 					case JsonToken.Boolean:
-						WriteString((bool)value ? "TRUE" : "FALSE", span);
+						WriteString((bool)value ? "1" : "0", span);
 						break;
 					case JsonToken.Date:
-						WriteString($"{(DateTime)value:yyyy-MM-dd HH:mm:ss}", span);
+						WriteString(((DateTime)value).ToString("yyyy-MM-dd HH:mm:ss"), span);
 						break;
 					case JsonToken.Integer:
 					case JsonToken.Float:
+						// TODO: int.TryFormat
 						WriteString(value.ToString(), span);
 						break;
 					default:
