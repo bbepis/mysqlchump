@@ -43,7 +43,7 @@ namespace mysqlchump
 			await writer.WriteAsync(text);
 		}
 
-		public static string ByteArrayToString(byte[] ba)
+		public static string ByteArrayToString(ReadOnlySpan<byte> ba)
 		{
 			StringBuilder hex = new StringBuilder(ba.Length * 2);
 			foreach (byte b in ba)

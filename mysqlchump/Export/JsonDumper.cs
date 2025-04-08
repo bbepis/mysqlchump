@@ -1,13 +1,14 @@
 using System;
+using System.Buffers.Text;
 using System.Collections.Generic;
 using System.Data.Common;
+using System.Data.SqlTypes;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using MySqlConnector;
-using Newtonsoft.Json;
 
 namespace mysqlchump.Export;
 
@@ -17,28 +18,26 @@ public class JsonDumper : BaseDumper
 
 	public override bool CompatibleWithMultiTableStdout => true;
 
-	private JsonTextWriter JsonWriter { get; set; } = null;
+	private StreamWriter JsonWriter { get; set; } = null;
 
 	public override async Task WriteStartTableAsync(string table, Stream outputStream, bool writeSchema, bool truncate)
 	{
 		if (JsonWriter == null)
 		{
 			// start writing new file
-			JsonWriter = new JsonTextWriter(new StreamWriter(outputStream, Encoding.UTF8, 20 * 1024 * 1024));
-			JsonWriter.Formatting = Formatting.None;
+			JsonWriter = new StreamWriter(outputStream, new UTF8Encoding(false), 20 * 1024 * 1024);
 
-			await JsonWriter.WriteStartObjectAsync();              // {
-			await JsonWriter.WritePropertyNameAsync("version");    //    "version"
-			await JsonWriter.WriteValueAsync(2);                   //             : 2,
-			await JsonWriter.WritePropertyNameAsync("tables");     //    "tables"
-			await JsonWriter.WriteStartArrayAsync();               //            : [
+			JsonWriter.Write("{\"version\":2,\"tables\":[");
+		}
+		else
+		{
+			JsonWriter.Write(",");
 		}
 
-		await JsonWriter.WriteStartObjectAsync();
-		await JsonWriter.WritePropertyNameAsync("name");
-		await JsonWriter.WriteValueAsync(table);
-		await JsonWriter.WritePropertyNameAsync("create_statement");
-		await JsonWriter.WriteValueAsync(await GetCreateSql(table));
+		JsonWriter.Write("{\"name\":");
+		WriteJsonString(table);
+		JsonWriter.Write(",\"create_statement\":");
+		WriteJsonString(await GetCreateSql(table));
 	}
 
 	public override async Task WriteInsertQueries(string table, string query, Stream outputStream, MySqlTransaction transaction = null)
@@ -57,25 +56,27 @@ public class JsonDumper : BaseDumper
 		}
 
 		await using var reader = await selectCommand.ExecuteReaderAsync();
-			
-		await JsonWriter.WritePropertyNameAsync("columns");
-		await JsonWriter.WriteStartObjectAsync();
+
+		JsonWriter.Write(",\"columns\":{");
 
 		Columns = (await reader.GetColumnSchemaAsync()).AsEnumerable().ToArray();
 
+		bool isFirst = true;
+
 		foreach (var column in Columns)
 		{
-			await JsonWriter.WritePropertyNameAsync(column.ColumnName);
-			await JsonWriter.WriteValueAsync(column.DataTypeName);
+			if (!isFirst)
+				JsonWriter.Write(",");
+			isFirst = false;
+
+			WriteJsonString(column.ColumnName);
+			JsonWriter.Write(":");
+			WriteJsonString(column.DataTypeName);
 		}
 
-		await JsonWriter.WriteEndObjectAsync();
-		
-		await JsonWriter.WritePropertyNameAsync("approx_count");
-		await JsonWriter.WriteValueAsync(totalRowCount);
-
-		await JsonWriter.WritePropertyNameAsync("rows");
-		await JsonWriter.WriteStartArrayAsync();
+		JsonWriter.Write("},\"approx_count\":");
+		JsonWriter.Write(totalRowCount.HasValue ? totalRowCount.Value.ToString() : "null");
+		JsonWriter.Write(",\"rows\":[");
 
 		long rowCounter = 0;
 			
@@ -106,6 +107,8 @@ public class JsonDumper : BaseDumper
 
 		try
 		{
+			bool firstRow = true;
+
 			while (await reader.ReadAsync())
 			{
 				if (dumpTimer.ElapsedMilliseconds >= 1000)
@@ -114,10 +117,17 @@ public class JsonDumper : BaseDumper
 					dumpTimer.Restart();
 				}
 
-				JsonWriter.WriteStartArray();
+				if (!firstRow)
+					JsonWriter.Write(",");
+
+				firstRow = false;
+				JsonWriter.Write("[");
 
 				for (int i = 0; i < Columns.Length; i++)
 				{
+					if (i > 0)
+						JsonWriter.Write(",");
+
 					var column = Columns[i];
 
 					object value;
@@ -127,10 +137,10 @@ public class JsonDumper : BaseDumper
 					else
 						value = reader[i];
 
-					JsonWriter.WriteValue(GetJsonMySqlValue(column, value));
+					WriteJsonMySqlValue(column, value);
 				}
 
-				JsonWriter.WriteEndArray();
+				JsonWriter.Write("]");
 				rowCounter++;
 			}
 		}
@@ -166,34 +176,152 @@ public class JsonDumper : BaseDumper
 
 		if (!Console.IsErrorRedirected)
 			Console.Error.WriteLine();
-			
-		await JsonWriter.WriteEndArrayAsync();
 
-		await JsonWriter.WritePropertyNameAsync("actual_count");
-		await JsonWriter.WriteValueAsync(rowCounter);
-
-		await JsonWriter.WriteEndObjectAsync();
+		JsonWriter.Write("],\"actual_count\":");
+		JsonWriter.Write(rowCounter.ToString());
+		JsonWriter.Write("}");
 	}
 
 	public override async Task WriteEndTableAsync(string table, Stream outputStream, bool tablesRemainingForStream)
 	{
 		if (!tablesRemainingForStream)
 		{
-			await JsonWriter.CloseAsync();
+			JsonWriter.Write("]}");
+			JsonWriter.Close();
 			JsonWriter = null;
 		}
 	}
 
-	private static object GetJsonMySqlValue(DbColumn column, object value)
+	private void WriteJsonMySqlValue(DbColumn column, object value)
 	{
 		if (value == null || value == DBNull.Value)
-			return null;
+		{
+			JsonWriter.Write("null");
+			return;
+		}
 
-		if (value is MySqlDecimal mySqlDecimal)
-			return mySqlDecimal.ToString();
+		var columnType = column.DataType;
 
-		return value;
+		if (columnType == typeof(byte)
+			|| columnType == typeof(sbyte)
+			|| columnType == typeof(ushort)
+			|| columnType == typeof(short)
+			|| columnType == typeof(uint)
+			|| columnType == typeof(int)
+			|| columnType == typeof(ulong)
+			|| columnType == typeof(long)
+			|| columnType == typeof(float)
+			|| columnType == typeof(double)
+			|| columnType == typeof(decimal))
+		{
+			JsonWriter.Write(value.ToString());
+			return;
+		}
 
-		//throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
+		if (columnType == typeof(MySqlDecimal))
+		{
+			JsonWriter.Write(((MySqlDecimal)value).ToString());
+			return;
+		}
+
+		if (columnType == typeof(DateTime))
+		{
+			var dtValue = (DateTime)value;
+			JsonWriter.Write($"\"{dtValue:yyyy-MM-ddTH:mm:ss.fffZ}\"");
+			return;
+		}
+
+		if (columnType == typeof(bool))
+		{
+			JsonWriter.Write((bool)value ? "true" : "false");
+			return;
+		}
+
+		if (columnType == typeof(string))
+		{
+			WriteJsonString((string)value);
+			return;
+		}
+
+		if (columnType == typeof(byte[]))
+		{
+			var data = (byte[])value;
+
+			if (data.Length > 512 * 1024)
+				throw new Exception("Cannot currently handle binary blobs bigger than 512kb");
+
+			Span<char> chars = stackalloc char[Base64.GetMaxEncodedToUtf8Length(data.Length)];
+
+			if (!Convert.TryToBase64Chars(data, chars, out int charsWritten))
+				throw new Exception("Could not convert data to base 64");
+
+			JsonWriter.Write("\"");
+			JsonWriter.Write(chars);
+			JsonWriter.Write("\"");
+			return;
+		}
+
+		throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
+	}
+
+	public void WriteJsonString(ReadOnlySpan<char> input)
+	{
+		JsonWriter.Write('"');
+
+		int runStart = 0;
+
+		for (int i = 0; i < input.Length; i++)
+		{
+			char c = input[i];
+			string escapeSequence = null;
+
+			switch (c)
+			{
+				case '\"':
+					escapeSequence = "\\\"";
+					break;
+				case '\\':
+					escapeSequence = "\\\\";
+					break;
+				case '\b':
+					escapeSequence = "\\b";
+					break;
+				case '\f':
+					escapeSequence = "\\f";
+					break;
+				case '\n':
+					escapeSequence = "\\n";
+					break;
+				case '\r':
+					escapeSequence = "\\r";
+					break;
+				case '\t':
+					escapeSequence = "\\t";
+					break;
+				default:
+					if (c < ' ')
+					{
+						escapeSequence = "\\u" + ((int)c).ToString("x4");
+					}
+					break;
+			}
+
+			if (escapeSequence != null)
+			{
+				if (i > runStart)
+				{
+					JsonWriter.Write(input.Slice(runStart, i - runStart));
+				}
+				JsonWriter.Write(escapeSequence);
+				runStart = i + 1;
+			}
+		}
+
+		if (runStart < input.Length)
+		{
+			JsonWriter.Write(input.Slice(runStart, input.Length - runStart));
+		}
+
+		JsonWriter.Write('\"');
 	}
 }

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Globalization;
 using System.IO;
 using System.Text;
@@ -31,25 +31,16 @@ public class JsonException : Exception
 }
 
 // The high–performance, synchronous JSON tokenizer.
-public class JsonTokenizer
+public class JsonTokenizer : IDisposable
 {
     // Underlying stream reader for decoding the stream.
-    private readonly StreamReader _reader;
+    private readonly StreamReader StreamReader;
     // A buffer that holds characters read from the stream.
-    private readonly char[] _buffer;
+    private readonly char[] Buffer;
     // _bufferPos is the current position and _bufferLen is the number
     // of valid chars currently in _buffer.
-    private int _bufferPos;
-    private int _bufferLen;
-
-    // Stack that tracks our container (object or array) context.
-    //private readonly Stack<JsonContainerType> _context = new Stack<JsonContainerType>();
-    // When inside an object, this flag tells us whether the next
-    // quoted string should be interpreted as a property name.
-    private bool _expectPropertyName;
-
-    // The possible container types.
-    //private enum JsonContainerType { Object, Array }
+    private int BufferPos;
+    private int BufferLen;
 
     // Token type for the last token read.
     public JsonTokenType TokenType { get; private set; }
@@ -66,10 +57,10 @@ public class JsonTokenizer
         if (stream == null)
             throw new ArgumentNullException(nameof(stream));
 
-        _buffer = new char[bufferSize];
+        Buffer = new char[bufferSize];
 
         // Construct a StreamReader (using UTF-8; adjust as needed).
-        _reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: bufferSize, leaveOpen: true);
+        StreamReader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: bufferSize, leaveOpen: true);
         // Prime the buffer.
         FillBuffer();
     }
@@ -86,20 +77,20 @@ public class JsonTokenizer
             return TokenType;
         }
 
-        char c = _buffer[_bufferPos];
+        char c = Buffer[BufferPos];
 
         // Punctuation tokens and structural characters.
         switch (c)
         {
             case '{':
-                _bufferPos++;
+                BufferPos++;
                 TokenType = JsonTokenType.StartObject;
                 //_context.Push(JsonContainerType.Object);
                 //_expectPropertyName = true;
                 return TokenType;
 
             case '}':
-                _bufferPos++;
+                BufferPos++;
                 //if (_context.Count == 0 || _context.Peek() != JsonContainerType.Object)
                 //    throw new JsonException("Unexpected '}' encountered.");
                 //_context.Pop();
@@ -107,14 +98,14 @@ public class JsonTokenizer
                 return TokenType;
 
             case '[':
-                _bufferPos++;
+                BufferPos++;
                 TokenType = JsonTokenType.StartArray;
                 //_context.Push(JsonContainerType.Array);
                 //_expectPropertyName = false;
                 return TokenType;
 
             case ']':
-                _bufferPos++;
+                BufferPos++;
                 //if (_context.Count == 0 || _context.Peek() != JsonContainerType.Array)
                 //    throw new JsonException("Unexpected ']' encountered.");
                 //_context.Pop();
@@ -122,15 +113,15 @@ public class JsonTokenizer
                 return TokenType;
 
             case ',':
-                _bufferPos++;
+                BufferPos++;
                 // In an object a comma means the next string is a property name.
                 //if (_context.Count > 0 && _context.Peek() == JsonContainerType.Object)
                 //    _expectPropertyName = true;
                 TokenType = JsonTokenType.Comma;
-                return TokenType;
+                return Read();
 
             case ':':
-                _bufferPos++;
+                BufferPos++;
                 TokenType = JsonTokenType.Colon;
                 return TokenType;
 
@@ -158,7 +149,7 @@ public class JsonTokenizer
                 return ReadNumber();
 
             default:
-                throw new JsonException($"Unexpected character '{c}' at buffer position {_bufferPos}.");
+                throw new JsonException($"Unexpected character '{c}' at buffer position {BufferPos}.");
         }
     }
 
@@ -167,14 +158,14 @@ public class JsonTokenizer
     {
         while (true)
         {
-            if (_bufferPos >= _bufferLen)
+            if (BufferPos >= BufferLen)
             {
                 if (!FillBuffer())
                     break;
             }
-            char ch = _buffer[_bufferPos];
+            char ch = Buffer[BufferPos];
             if (ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r')
-                _bufferPos++;
+                BufferPos++;
             else
                 break;
         }
@@ -184,27 +175,27 @@ public class JsonTokenizer
     // (from _bufferPos to _bufferLen) are shifted to the start.
     private bool FillBuffer()
     {
-        if (_bufferPos < _bufferLen)
+        if (BufferPos < BufferLen)
         {
-            int remaining = _bufferLen - _bufferPos;
+            int remaining = BufferLen - BufferPos;
             if (remaining > 0)
             {
                 // Use a span copy for speed.
-                ReadOnlySpan<char> src = _buffer.AsSpan(_bufferPos, remaining);
-                src.CopyTo(_buffer);
+                ReadOnlySpan<char> src = Buffer.AsSpan(BufferPos, remaining);
+                src.CopyTo(Buffer);
             }
-            _bufferLen = remaining;
-            _bufferPos = 0;
+            BufferLen = remaining;
+            BufferPos = 0;
         }
         else
         {
-            _bufferLen = 0;
-            _bufferPos = 0;
+            BufferLen = 0;
+            BufferPos = 0;
         }
-        int read = _reader.Read(_buffer, _bufferLen, _buffer.Length - _bufferLen);
+        int read = StreamReader.Read(Buffer, BufferLen, Buffer.Length - BufferLen);
         if (read == 0)
             return false;
-        _bufferLen += read;
+        BufferLen += read;
         return true;
     }
 
@@ -212,12 +203,12 @@ public class JsonTokenizer
     // Returns true if that condition holds.
     private bool EnsureBuffer(int minChars)
     {
-        while (_bufferLen - _bufferPos < minChars)
+        while (BufferLen - BufferPos < minChars)
         {
             if (!FillBuffer())
                 break;
         }
-        return _bufferLen - _bufferPos >= minChars;
+        return BufferLen - BufferPos >= minChars;
     }
 
     // Read a JSON string (which may be escaped). When inside an object and
@@ -226,8 +217,8 @@ public class JsonTokenizer
     private JsonTokenType ReadString()
     {
         // Skip the opening quote.
-        _bufferPos++;
-        int start = _bufferPos;
+        BufferPos++;
+        int start = BufferPos;
         StringBuilder sb = tempBuilder;
         sb.Clear();
         bool hadEscape = false;
@@ -235,12 +226,12 @@ public class JsonTokenizer
         while (true)
         {
             // we need an extra character buffer at the end to check for colons
-            if (_bufferPos + 1 >= _bufferLen)
+            if (BufferPos + 1 >= BufferLen)
             {
                 hadEscape = true;
-                int length = _bufferPos - start;
+                int length = BufferPos - start;
                 sb ??= new StringBuilder();
-                sb.Append(_buffer, start, length);
+                sb.Append(Buffer, start, length);
 
                 if (!EnsureBuffer(2))
                     throw new JsonException("Unterminated string literal.");
@@ -248,34 +239,33 @@ public class JsonTokenizer
                 start = 0;
             }
 
-            char c = _buffer[_bufferPos];
+            char c = Buffer[BufferPos];
             if (c == '"')
             {
-                int length = _bufferPos - start;
+                int length = BufferPos - start;
                 ReadOnlyMemory<char> result;
                 if (hadEscape)
                 {
                     // Append any chars after the last escape.
-                    sb!.Append(_buffer, start, length);
+                    sb!.Append(Buffer, start, length);
                     result = sb!.ToString().AsMemory();
                 }
                 else
                 {
                     // Fast–path: no escapes encountered.
-                    result = new Memory<char>(_buffer, start, length);
+                    result = new Memory<char>(Buffer, start, length);
                 }
-                _bufferPos++; // Skip closing quote.
-                // Depending on the state, either this string is a property name or a literal.
-                //if (_context.Count > 0 && _context.Peek() == JsonContainerType.Object && _expectPropertyName)
-                //{
-                //    TokenType = JsonTokenType.PropertyName;
-                //    _expectPropertyName = false;
-                //}
-                //else
-                //{
-                    TokenType = _buffer[_bufferPos] == ':' ? JsonTokenType.PropertyName : JsonTokenType.String;
-                //}
-                ValueString = result;
+                BufferPos++; // Skip closing quote.
+
+				if (Buffer[BufferPos] == ':')
+				{
+					TokenType = JsonTokenType.PropertyName;
+					BufferPos++;
+				}
+				else
+					TokenType = JsonTokenType.String;
+
+				ValueString = result;
                 return TokenType;
             }
             else if (c == '\\')
@@ -283,11 +273,11 @@ public class JsonTokenizer
                 hadEscape = true;
                 sb ??= new StringBuilder();
                 // Append the literal characters so far.
-                sb.Append(_buffer, start, _bufferPos - start);
-                _bufferPos++; // Skip the backslash.
+                sb.Append(Buffer, start, BufferPos - start);
+                BufferPos++; // Skip the backslash.
                 if (!EnsureBuffer(1))
                     throw new JsonException("Incomplete escape sequence in string literal.");
-                char escape = _buffer[_bufferPos++];
+                char escape = Buffer[BufferPos++];
                 switch (escape)
                 {
                     case '"': sb.Append('"'); break;
@@ -304,7 +294,7 @@ public class JsonTokenizer
                         int code = 0;
                         for (int i = 0; i < 4; i++)
                         {
-                            char hex = _buffer[_bufferPos++];
+                            char hex = Buffer[BufferPos++];
                             code = (code << 4) | HexToInt(hex);
                         }
                         sb.Append((char)code);
@@ -312,11 +302,11 @@ public class JsonTokenizer
                     default:
                         throw new JsonException($"Invalid escape sequence: \\{escape}");
                 }
-                start = _bufferPos;
+                start = BufferPos;
             }
             else
             {
-                _bufferPos++;
+                BufferPos++;
             }
         }
     }
@@ -336,16 +326,16 @@ public class JsonTokenizer
     // Read a literal “true” or “false” from the stream.
     private JsonTokenType ReadBoolean()
     {
-        if (_buffer[_bufferPos] == 't')
+        if (Buffer[BufferPos] == 't')
         {
             const string trueLiteral = "true";
             for (int i = 0; i < trueLiteral.Length; i++)
             {
                 if (!EnsureBuffer(1))
                     throw new JsonException("Unexpected end of input reading literal 'true'.");
-                if (_buffer[_bufferPos] != trueLiteral[i])
+                if (Buffer[BufferPos] != trueLiteral[i])
                     throw new JsonException("Invalid token -- expected literal 'true'.");
-                _bufferPos++;
+                BufferPos++;
             }
             TokenType = JsonTokenType.Boolean;
             ValueBoolean = true;
@@ -357,9 +347,9 @@ public class JsonTokenizer
             {
                 if (!EnsureBuffer(1))
                     throw new JsonException("Unexpected end of input reading literal 'false'.");
-                if (_buffer[_bufferPos] != falseLiteral[i])
+                if (Buffer[BufferPos] != falseLiteral[i])
                     throw new JsonException("Invalid token -- expected literal 'false'.");
-                _bufferPos++;
+                BufferPos++;
             }
             TokenType = JsonTokenType.Boolean;
             ValueBoolean = false;
@@ -375,9 +365,9 @@ public class JsonTokenizer
         {
             if (!EnsureBuffer(1))
                 throw new JsonException("Unexpected end of input reading literal 'null'.");
-            if (_buffer[_bufferPos] != nullLiteral[i])
+            if (Buffer[BufferPos] != nullLiteral[i])
                 throw new JsonException("Invalid token -- expected literal 'null'.");
-            _bufferPos++;
+            BufferPos++;
         }
         TokenType = JsonTokenType.Null;
         return TokenType;
@@ -390,28 +380,28 @@ public class JsonTokenizer
     {
         EnsureBuffer(30);
 
-        int start = _bufferPos;
+        int start = BufferPos;
         bool isFraction = false, isExponent = false;
 
         // optional minus sign.
-        if (_buffer[_bufferPos] == '-')
+        if (Buffer[BufferPos] == '-')
         {
-            _bufferPos++;
+            BufferPos++;
             if (!EnsureBuffer(1))
                 throw new JsonException("Unexpected end after '-' in number literal.");
         }
 
         // integer part
-        if (_buffer[_bufferPos] == '0')
+        if (Buffer[BufferPos] == '0')
         {
-            _bufferPos++;
+            BufferPos++;
         }
-        else if (_buffer[_bufferPos] >= '1' && _buffer[_bufferPos] <= '9')
+        else if (Buffer[BufferPos] >= '1' && Buffer[BufferPos] <= '9')
         {
-            while (EnsureBuffer(1) && _buffer[_bufferPos] >= '0' && _buffer[_bufferPos] <= '9')
+            while (EnsureBuffer(1) && Buffer[BufferPos] >= '0' && Buffer[BufferPos] <= '9')
             {
-                _bufferPos++;
-                if (_bufferPos >= _bufferLen)
+                BufferPos++;
+                if (BufferPos >= BufferLen)
                     break;
             }
         }
@@ -421,40 +411,40 @@ public class JsonTokenizer
         }
 
         // fraction part
-        if (EnsureBuffer(1) && _buffer[_bufferPos] == '.')
+        if (EnsureBuffer(1) && Buffer[BufferPos] == '.')
         {
             isFraction = true;
-            _bufferPos++; // skip '.'
-            if (!EnsureBuffer(1) || !(_buffer[_bufferPos] >= '0' && _buffer[_bufferPos] <= '9'))
+            BufferPos++; // skip '.'
+            if (!EnsureBuffer(1) || !(Buffer[BufferPos] >= '0' && Buffer[BufferPos] <= '9'))
                 throw new JsonException("Invalid number literal; expected digit after decimal point.");
-            while (EnsureBuffer(1) && _buffer[_bufferPos] >= '0' && _buffer[_bufferPos] <= '9')
+            while (EnsureBuffer(1) && Buffer[BufferPos] >= '0' && Buffer[BufferPos] <= '9')
             {
-                _bufferPos++;
-                if (_bufferPos >= _bufferLen)
+                BufferPos++;
+                if (BufferPos >= BufferLen)
                     break;
             }
         }
 
         // exponent part
-        if (EnsureBuffer(1) && (_buffer[_bufferPos] == 'e' || _buffer[_bufferPos] == 'E'))
+        if (EnsureBuffer(1) && (Buffer[BufferPos] == 'e' || Buffer[BufferPos] == 'E'))
         {
             isExponent = true;
-            _bufferPos++; // skip e/E
-            if (EnsureBuffer(1) && (_buffer[_bufferPos] == '+' || _buffer[_bufferPos] == '-'))
-                _bufferPos++;
-            if (!EnsureBuffer(1) || !(_buffer[_bufferPos] >= '0' && _buffer[_bufferPos] <= '9'))
+            BufferPos++; // skip e/E
+            if (EnsureBuffer(1) && (Buffer[BufferPos] == '+' || Buffer[BufferPos] == '-'))
+                BufferPos++;
+            if (!EnsureBuffer(1) || !(Buffer[BufferPos] >= '0' && Buffer[BufferPos] <= '9'))
                 throw new JsonException("Invalid number literal; expected digit in exponent.");
-            while (EnsureBuffer(1) && _buffer[_bufferPos] >= '0' && _buffer[_bufferPos] <= '9')
+            while (EnsureBuffer(1) && Buffer[BufferPos] >= '0' && Buffer[BufferPos] <= '9')
             {
-                _bufferPos++;
-                if (_bufferPos >= _bufferLen)
+                BufferPos++;
+                if (BufferPos >= BufferLen)
                     break;
             }
         }
 
-        int length = _bufferPos - start;
+        int length = BufferPos - start;
         // Create a temporary string from the numeric literal.
-        var numStr = new ReadOnlySpan<char>(_buffer, start, length);
+        var numStr = new ReadOnlySpan<char>(Buffer, start, length);
         if (!isFraction && !isExponent && long.TryParse(numStr, out long l))
         {
             TokenType = JsonTokenType.NumberLong;
@@ -467,4 +457,6 @@ public class JsonTokenizer
         }
         return TokenType;
     }
+
+	public void Dispose() => ((IDisposable)StreamReader).Dispose();
 }

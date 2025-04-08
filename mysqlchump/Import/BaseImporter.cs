@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 using MySqlConnector;
 using System.IO.Pipelines;
 using System.Collections.Generic;
-using System.IO;
 
 namespace mysqlchump.Import;
 
@@ -252,7 +251,7 @@ internal class BaseImporter
 		{
 			cts.Cancel();
 			writeProgress();
-            Logging.WriteLine();
+            Console.Error.WriteLine();
 		}
 	}
 }

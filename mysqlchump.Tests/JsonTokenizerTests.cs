@@ -29,4 +29,47 @@ class JsonTokenizerTests
 		while (tokenizer.Read() != JsonTokenType.EndOfFile) { };
 		Console.WriteLine(stopwatch.ToString());
 	}
+
+	[Test]
+	public void DoSmallJsonTest()
+	{
+		using var jsonStream = new MemoryStream(Encoding.UTF8.GetBytes("{\"propName\": [1,2,3]}"));
+
+		var tokenizer = new JsonTokenizer(jsonStream);
+
+		while (true) {
+			var token = tokenizer.Read();
+
+			switch (token)
+			{
+				case JsonTokenType.None:
+				case JsonTokenType.StartObject:
+				case JsonTokenType.EndObject:
+				case JsonTokenType.StartArray:
+				case JsonTokenType.EndArray:
+				case JsonTokenType.Null:
+				case JsonTokenType.Comma:
+				case JsonTokenType.Colon:
+				case JsonTokenType.EndOfFile:
+					Console.WriteLine(token.ToString());
+					break;
+				case JsonTokenType.String:
+				case JsonTokenType.PropertyName:
+					Console.WriteLine($"{token}: {tokenizer.ValueString}");
+					break;
+				case JsonTokenType.NumberLong:
+					Console.WriteLine($"{token}: {tokenizer.ValueLong}");
+					break;
+				case JsonTokenType.NumberDouble:
+					Console.WriteLine($"{token}: {tokenizer.ValueDouble}");
+					break;
+				case JsonTokenType.Boolean:
+					Console.WriteLine($"{token}: {tokenizer.ValueBoolean}");
+					break;
+			}
+
+			if (token == JsonTokenType.EndOfFile)
+				break;
+		}
+	}
 }

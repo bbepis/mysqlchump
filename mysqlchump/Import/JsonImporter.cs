@@ -5,9 +5,9 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using Newtonsoft.Json;
 using System.Threading.Channels;
 using System.IO.Pipelines;
+using System.Buffers.Text;
 
 namespace mysqlchump.Import;
 
@@ -72,36 +72,57 @@ WHERE table_schema = '{connection.Database}'
 			});
 		}
 
-		using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
-		using var jsonReader = new JsonTextReader(reader);
+		using var jsonReader = new JsonTokenizer(dataStream);
 
-		void AssertToken(JsonToken tokenType, object value = null)
+		void AssertToken(JsonTokenType tokenType, object value = null)
 		{
-			if (!jsonReader.Read() || jsonReader.TokenType != tokenType || (value != null && !jsonReader.Value.Equals(value)))
+			var token = jsonReader.Read();
+
+			if (token == JsonTokenType.EndOfFile || token != tokenType)
+				goto failure;
+
+			if (value == null)
+				return;
+
+			if ((token == JsonTokenType.String || token == JsonTokenType.PropertyName) && ((string)value).AsMemory().Equals(jsonReader.ValueString))
+				goto failure;
+
+			if (token == JsonTokenType.NumberLong && Convert.ToInt64(value) != jsonReader.ValueLong)
+				goto failure;
+
+			if (token == JsonTokenType.NumberDouble && Convert.ToDouble(value) != jsonReader.ValueDouble)
+				goto failure;
+
+			if (token == JsonTokenType.Boolean && (bool)value != jsonReader.ValueBoolean)
+				goto failure;
+
+			return;
+
+failure:
 				throw new InvalidOperationException(
-					$"Token type {jsonReader.TokenType} invalid at this position L{jsonReader.LineNumber}:{jsonReader.LinePosition} (expected {tokenType}{(value != null ? $", {value}" : "")})");
+					$"Token type {jsonReader.TokenType} invalid at this position (expected {tokenType}{(value != null ? $", {value}" : "")})");
 		}
 
-		AssertToken(JsonToken.StartObject);
-		AssertToken(JsonToken.PropertyName, "version");
-		AssertToken(JsonToken.Integer, 2L);
-		AssertToken(JsonToken.PropertyName, "tables");
-		AssertToken(JsonToken.StartArray);
+		AssertToken(JsonTokenType.StartObject);
+		AssertToken(JsonTokenType.PropertyName, "version");
+		AssertToken(JsonTokenType.NumberLong, 2L);
+		AssertToken(JsonTokenType.PropertyName, "tables");
+		AssertToken(JsonTokenType.StartArray);
 
-		async Task<bool> ProcessTable(JsonTextReader jsonReader)
+		async Task<bool> ProcessTable(JsonTokenizer jsonReader)
 		{
-			if (!jsonReader.Read() || jsonReader.TokenType == JsonToken.EndArray)
+			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType == JsonTokenType.EndArray)
 				return false;
 
-			AssertToken(JsonToken.PropertyName, "name");
-			AssertToken(JsonToken.String);
+			AssertToken(JsonTokenType.PropertyName, "name");
+			AssertToken(JsonTokenType.String);
 
-			string tableName = (string)jsonReader.Value;
+			string tableName = jsonReader.ValueString.ToString();
 
-			AssertToken(JsonToken.PropertyName, "create_statement");
-			AssertToken(JsonToken.String);
+			AssertToken(JsonTokenType.PropertyName, "create_statement");
+			AssertToken(JsonTokenType.String);
 
-			string createStatement = (string)jsonReader.Value;
+			string createStatement = jsonReader.ValueString.ToString();
 
 			//Console.Error.WriteLine(createStatement);
 
@@ -138,25 +159,25 @@ WHERE table_schema = '{connection.Database}'
 				createStatement = parsedTable.ToCreateTableSql();
 			}
 
-			AssertToken(JsonToken.PropertyName, "columns");
-			AssertToken(JsonToken.StartObject);
+			AssertToken(JsonTokenType.PropertyName, "columns");
+			AssertToken(JsonTokenType.StartObject);
 
 			var columns = new List<(string columnName, string type)>();
 
-			while (await jsonReader.ReadAsync() && jsonReader.TokenType == JsonToken.PropertyName)
+			while (jsonReader.Read() != JsonTokenType.EndOfFile && jsonReader.TokenType == JsonTokenType.PropertyName)
 			{
-				var columnName = (string)jsonReader.Value;
-				AssertToken(JsonToken.String);
+				var columnName = jsonReader.ValueString.ToString();
+				AssertToken(JsonTokenType.String);
 
-				columns.Add((columnName, (string)jsonReader.Value));
+				columns.Add((columnName, jsonReader.ValueString.ToString()));
 			}
 
-			AssertToken(JsonToken.PropertyName, "approx_count");
-			await jsonReader.ReadAsync();
-			ulong? approxCount = jsonReader.Value == null ? null : (ulong?)(long)jsonReader.Value;
+			AssertToken(JsonTokenType.PropertyName, "approx_count");
+			
+			ulong? approxCount = jsonReader.Read() == JsonTokenType.Null ? null : (ulong?)jsonReader.ValueLong;
 
-			AssertToken(JsonToken.PropertyName, "rows");
-			AssertToken(JsonToken.StartArray);
+			AssertToken(JsonTokenType.PropertyName, "rows");
+			AssertToken(JsonTokenType.StartArray);
 
 			if (options.SourceTables == null
 				|| options.SourceTables.Length == 0
@@ -211,8 +232,8 @@ WHERE table_schema = '{connection.Database}'
 						}
 						catch (Exception ex)
 						{
-							Logging.WriteLine($"Error when reading data source @ L{jsonReader.LineNumber}:{jsonReader.LinePosition}");
-							Logging.WriteLine(ex.ToString());
+							Console.Error.WriteLine($"Error when reading data source");
+							Console.Error.WriteLine(ex.ToString());
 						}
 
 						channel.Writer.Complete();
@@ -276,8 +297,8 @@ WHERE table_schema = '{connection.Database}'
 						}
 						catch (Exception ex)
 						{
-							Logging.WriteLine($"Error when reading data source @ L{jsonReader.LineNumber}:{jsonReader.LinePosition}");
-							Logging.WriteLine(ex.ToString());
+							Console.Error.WriteLine($"Error when reading data source");
+							Console.Error.WriteLine(ex.ToString());
 
 							foreach (var writer in pipeWriters)
 								await writer.CompleteAsync(ex);
@@ -314,11 +335,11 @@ WHERE table_schema = '{connection.Database}'
 
 				int layer = 0;
 
-				while (jsonReader.Read() && layer >= 0)
+				while (jsonReader.Read() != JsonTokenType.EndOfFile && layer >= 0)
 				{
-					if (jsonReader.TokenType == JsonToken.StartArray)
+					if (jsonReader.TokenType == JsonTokenType.StartArray)
 						layer++;
-					else if (jsonReader.TokenType == JsonToken.EndArray)
+					else if (jsonReader.TokenType == JsonTokenType.EndArray)
 						layer--;
 
 					if (layer < 0)
@@ -326,10 +347,10 @@ WHERE table_schema = '{connection.Database}'
 				}
 			}
 			
-			AssertToken(JsonToken.PropertyName, "actual_count");
-			AssertToken(JsonToken.Integer);
+			AssertToken(JsonTokenType.PropertyName, "actual_count");
+			AssertToken(JsonTokenType.NumberLong);
 
-			AssertToken(JsonToken.EndObject);
+			AssertToken(JsonTokenType.EndObject);
 
 			return true;
 		}
@@ -344,7 +365,7 @@ WHERE table_schema = '{connection.Database}'
 
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);
 
-	private (bool canContinue, string insertQuery, int rowCount) GetNextInsertBatch(JsonTextReader jsonReader, string tableName, List<(string columnName, string type)> columns, bool insertIgnore)
+	private (bool canContinue, string insertQuery, int rowCount) GetNextInsertBatch(JsonTokenizer jsonReader, string tableName, List<(string columnName, string type)> columns, bool insertIgnore)
 	{
 		const int insertLimit = 2000;
 		int count = 0;
@@ -355,9 +376,11 @@ WHERE table_schema = '{connection.Database}'
 		bool needsComma = false;
 		bool canContinue = true;
 
+		byte[] b64Buffer = new byte[64];
+
 		for (; count < insertLimit; count++)
 		{
-			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.StartArray)
+			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType != JsonTokenType.StartArray)
 			{
 				canContinue = false;
 				break;
@@ -368,35 +391,46 @@ WHERE table_schema = '{connection.Database}'
 
 			for (int columnNum = 0; columnNum < columns.Count; columnNum++)
 			{
-				if (!jsonReader.Read() || jsonReader.TokenType == JsonToken.EndArray)
+				if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType == JsonTokenType.EndArray)
 					throw new InvalidDataException("Row ends prematurely");
 
 				if (columnNum > 0)
 					queryBuilder.Append(',');
 				
-				object value = jsonReader.Value;
-				string writtenValue;
-				
-				if (jsonReader.TokenType == JsonToken.Null)
+				string writtenValue = null;
+
+				if (jsonReader.TokenType == JsonTokenType.Null)
 					writtenValue = "NULL";
 				else if (columns[columnNum].type == "BLOB")
-					writtenValue = "_binary 0x" + Utility.ByteArrayToString(Convert.FromBase64String((string)value));
-				else if (jsonReader.TokenType == JsonToken.String)
-					writtenValue = $"'{((string)value).Replace("\\", "\\\\").Replace("'", "''")}'";
-				else if (jsonReader.TokenType == JsonToken.Boolean)
-					writtenValue = (bool)value ? "TRUE": "FALSE";
-				else if (jsonReader.TokenType == JsonToken.Date)
-					writtenValue = $"'{(DateTime)value:yyyy-MM-dd HH:mm:ss}'";
-				else if (jsonReader.TokenType == JsonToken.Integer
-				         || jsonReader.TokenType == JsonToken.Float)
-					writtenValue = value.ToString();
+				{
+					if (b64Buffer.Length < jsonReader.ValueString.Length)
+						b64Buffer = new byte[jsonReader.ValueString.Length];
+
+					if (!Convert.TryFromBase64Chars(jsonReader.ValueString.Span, b64Buffer, out var decodeLength))
+						throw new Exception($"Failed to decode base64 string: {jsonReader.ValueString.Span}");
+
+					queryBuilder.Append("_binary 0x");
+
+					writtenValue = Utility.ByteArrayToString(b64Buffer.AsSpan(0, decodeLength));
+				}
+				else if (jsonReader.TokenType == JsonTokenType.String)
+					writtenValue = $"'{jsonReader.ValueString.ToString().Replace("\\", "\\\\").Replace("'", "''")}'";
+				else if (jsonReader.TokenType == JsonTokenType.Boolean)
+					writtenValue = jsonReader.ValueBoolean ? "TRUE" : "FALSE";
+				//else if (jsonReader.TokenType == JsonTokenType.Date)
+				//	writtenValue = $"'{(DateTime)value:yyyy-MM-dd HH:mm:ss}'";
+				else if (jsonReader.TokenType == JsonTokenType.NumberLong)
+					writtenValue = jsonReader.ValueLong.ToString();
+				else if (jsonReader.TokenType == JsonTokenType.NumberDouble)
+					writtenValue = jsonReader.ValueDouble.ToString();
 				else
 					throw new InvalidDataException($"Unknown token type: {jsonReader.TokenType}");
 
-				queryBuilder.Append(writtenValue);
+				if (writtenValue != null)
+					queryBuilder.Append(writtenValue);
 			}
 
-			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.EndArray)
+			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType != JsonTokenType.EndArray)
 				throw new InvalidDataException("Row ends prematurely");
 			
 			queryBuilder.Append(')');
@@ -410,7 +444,7 @@ WHERE table_schema = '{connection.Database}'
 		return (canContinue, queryBuilder.ToString(), count);
 	}
 
-	private (int rows, bool canContinue) WriteBatchCsvPipe(JsonTextReader jsonReader, PipeWriter pipeWriter, string tableName, List<(string columnName, string type)> columns)
+	private (int rows, bool canContinue) WriteBatchCsvPipe(JsonTokenizer jsonReader, PipeWriter pipeWriter, string tableName, List<(string columnName, string type)> columns)
 	{
 		bool canContinue = true;
 
@@ -443,7 +477,7 @@ WHERE table_schema = '{connection.Database}'
 			currentPosition += encoding.GetBytes(data, span.Slice(currentPosition));
 		}
 
-		void SanitizeAndWrite(string input, Span<byte> span)
+		void SanitizeAndWrite(ReadOnlySpan<char> input, Span<byte> span)
 		{
 			bool requiresEscaping = false;
 			int len = input.Length;
@@ -467,10 +501,10 @@ WHERE table_schema = '{connection.Database}'
 
 			int start = 0;
 
-			void Flush(int i, Span<byte> span)
+			void Flush(int i, ReadOnlySpan<char> input, Span<byte> span)
 			{
 				if (i > start)
-					WriteString(input.AsSpan(start, i - start), span);
+					WriteString(input.Slice(start, i - start), span);
 			}
 
 			for (int i = 0; i < len; i++)
@@ -482,36 +516,36 @@ WHERE table_schema = '{connection.Database}'
 					case '\r':
 						if (i + 1 < len && input[i + 1] == '\n')
 						{
-							Flush(i, span);
+							Flush(i, input, span);
 							WriteString("\\\n", span);
 							i++;
 							start = i + 1;
 						}
 						break;
 					case '\n':
-						Flush(i, span);
+						Flush(i, input, span);
 						WriteString("\\\n", span);
 						start = i + 1;
 						break;
 					case '"':
-						Flush(i, span);
+						Flush(i, input, span);
 						WriteString("\\\"", span);
 						start = i + 1;
 						break;
 					case '\0':
-						Flush(i, span);
+						Flush(i, input, span);
 						WriteString("\\0", span);
 						start = i + 1;
 						break;
 					case '\\':
-						Flush(i, span);
+						Flush(i, input, span);
 						WriteString("\\\\", span);
 						start = i + 1;
 						break;
 				}
 			}
 
-			Flush(len, span);
+			Flush(len, input, span);
 			WriteString("\"", span);
 		}
 
@@ -522,7 +556,7 @@ WHERE table_schema = '{connection.Database}'
 			//if (rows >= 2000)
 			//	break;
 
-			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.StartArray)
+			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType != JsonTokenType.StartArray)
 			{
 				canContinue = false;
 				break;
@@ -532,39 +566,40 @@ WHERE table_schema = '{connection.Database}'
 
 			for (int columnNum = 0; columnNum < columns.Count; columnNum++)
 			{
-				if (!jsonReader.Read() || jsonReader.TokenType == JsonToken.EndArray)
+				if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType == JsonTokenType.EndArray)
 					throw new InvalidDataException("Row ends prematurely");
 
 				if (columnNum > 0)
 					WriteString(",", span);
 
-				object value = jsonReader.Value;
-
 				switch (jsonReader.TokenType)
 				{
-					case JsonToken.Null:
+					case JsonTokenType.Null:
 						WriteString("\\N", span);
 						break;
-					case JsonToken.String:
+					case JsonTokenType.String:
 						// if (columns[columnNum].type == "BLOB")
-						SanitizeAndWrite((string)value, span);
+						SanitizeAndWrite(jsonReader.ValueString.Span, span);
 						break;
-					case JsonToken.Boolean:
-						WriteString((bool)value ? "1" : "0", span);
+					case JsonTokenType.Boolean:
+						WriteString(jsonReader.ValueBoolean ? "1" : "0", span);
 						break;
-					case JsonToken.Date:
-						WriteString(((DateTime)value).ToString("yyyy-MM-dd HH:mm:ss"), span);
-						break;
-					case JsonToken.Integer:
-					case JsonToken.Float:
+					//case JsonToken.Date:
+					//	WriteString(((DateTime)value).ToString("yyyy-MM-dd HH:mm:ss"), span);
+					//	break;
+					case JsonTokenType.NumberLong:
 						// TODO: int.TryFormat
-						WriteString(value.ToString(), span);
+						WriteString(jsonReader.ValueLong.ToString(), span);
+						break;
+					case JsonTokenType.NumberDouble:
+						// TODO: double.TryFormat
+						WriteString(jsonReader.ValueDouble.ToString(), span);
 						break;
 					default:
 						if (columns[columnNum].type == "BLOB")
 						{
 							//WriteString(Utility.ByteArrayToString(Convert.FromBase64String((string)value)), span);
-							WriteString((string)value, span);
+							WriteString(jsonReader.ValueString.Span, span);
 							break;
 						}
 						else
@@ -572,7 +607,7 @@ WHERE table_schema = '{connection.Database}'
 				}
 			}
 
-			if (!jsonReader.Read() || jsonReader.TokenType != JsonToken.EndArray)
+			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType != JsonTokenType.EndArray)
 				throw new InvalidDataException("Row ends prematurely");
 
 			rows++;
