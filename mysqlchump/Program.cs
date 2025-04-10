@@ -351,6 +351,9 @@ class Program
 
 		bool connectionSuccessful = false;
 		bool redoLogEnabled = false;
+		string doubleWriteStatus = "ON";
+
+		Func<Task> resetAggressiveOptions = null;
 
 		try
 		{
@@ -364,7 +367,7 @@ class Program
 				{
 					using var command = connection.CreateCommand();
 					command.CommandTimeout = 99999;
-					command.CommandText = "SET sql_log_bin = 0;";
+					command.CommandText = "SET sql_log_bin = 'OFF';";
 
 					command.ExecuteScalar();
 				}
@@ -417,9 +420,50 @@ class Program
 					command.CommandText = "SELECT VARIABLE_VALUE FROM performance_schema.global_status WHERE variable_name = 'Innodb_redo_log_enabled';";
 					redoLogEnabled = (string)(await command.ExecuteScalarAsync()) == "ON";
 
+					command.CommandText = "SELECT @@innodb_doublewrite;";
+					doubleWriteStatus = (string)await command.ExecuteScalarAsync();
+
+					resetAggressiveOptions = async () =>
+					{
+						await using var connection = new MySqlConnection(connectionString);
+
+						await connection.OpenAsync();
+
+						using var command = connection.CreateCommand();
+						command.CommandTimeout = 99999;
+
+						command.CommandText = $"SET GLOBAL innodb_doublewrite = '{doubleWriteStatus}'";
+						await command.ExecuteNonQueryAsync();
+
+						if (redoLogEnabled)
+						{
+							command.CommandText = "ALTER INSTANCE ENABLE INNODB REDO_LOG;";
+							await command.ExecuteNonQueryAsync();
+						}
+					};
+
+					Console.CancelKeyPress += (s, e) =>
+					{
+						if (options.AggressiveUnsafe)
+						{
+							Console.Error.WriteLine("Attempting to shut down gracefully...");
+							Console.Error.WriteLine("Resetting unsafe database variables...");
+
+							Task.Run(async () => await resetAggressiveOptions()).Wait();
+
+							Console.Error.WriteLine("Completed.");
+						}
+					};
+
 					if (redoLogEnabled)
 					{
 						command.CommandText = "ALTER INSTANCE DISABLE INNODB REDO_LOG;";
+						await command.ExecuteNonQueryAsync();
+					}
+
+					if (doubleWriteStatus == "ON")
+					{
+						command.CommandText = $"SET GLOBAL innodb_doublewrite = 'DETECT_ONLY'"; // we can't set OFF dynamically
 						await command.ExecuteNonQueryAsync();
 					}
 				}
@@ -463,16 +507,9 @@ class Program
 			if (!stdin)
 				await currentStream.DisposeAsync();
 
-			if (connectionSuccessful && options.AggressiveUnsafe && redoLogEnabled)
+			if (connectionSuccessful && resetAggressiveOptions != null)
 			{
-				await using var connection = new MySqlConnection(connectionString);
-
-				await connection.OpenAsync();
-				
-				using var command = connection.CreateCommand();
-				command.CommandTimeout = 99999;
-				command.CommandText = "ALTER INSTANCE ENABLE INNODB REDO_LOG;";
-				await command.ExecuteNonQueryAsync();
+				await resetAggressiveOptions();
 			}
 		}
 	}
