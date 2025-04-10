@@ -7,7 +7,6 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Threading.Channels;
 using System.IO.Pipelines;
-using System.Buffers.Text;
 
 namespace mysqlchump.Import;
 

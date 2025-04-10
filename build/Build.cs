@@ -2,7 +2,6 @@ using System.IO;
 using Nuke.Common;
 using Nuke.Common.IO;
 using Nuke.Common.Tools.DotNet;
-using static Nuke.Common.IO.FileSystemTasks;
 
 class Build : NukeBuild
 {
@@ -36,8 +35,7 @@ class Build : NukeBuild
 			var outputFolder = prefixFolder / runtime.name;
 			var outputZip = BuildOutputDirectory / $"{prefix}-{version}-{runtime.name}.zip";
 
-			
-			EnsureCleanDirectory(outputFolder);
+			outputFolder.CreateOrCleanDirectory();
 
 			DotNetTasks.DotNetPublish(x => x
 				.SetProject(projectPath)
@@ -51,10 +49,10 @@ class Build : NukeBuild
 			if (package)
 			{
 				if (File.Exists(outputZip))
-					DeleteFile(outputZip);
+					outputZip.DeleteFile();
 
-				CompressionTasks.CompressZip(outputFolder, outputZip);
-				DeleteDirectory(prefixFolder);
+				outputFolder.CompressTo(outputZip);
+				prefixFolder.DeleteDirectory();
 			}
 		}
 	}
@@ -63,14 +61,14 @@ class Build : NukeBuild
 		.Before(Package)
 		.Executes(() =>
 		{
-			EnsureCleanDirectory(BuildOutputDirectory);
+			BuildOutputDirectory.CreateOrCleanDirectory();
 		});
 
 	Target Package => _ => _
 		.DependsOn(PrePackage)
 		.Executes(() =>
 		{
-			EnsureExistingDirectory(BuildOutputDirectory);
+			BuildOutputDirectory.CreateDirectory();
 			DoPublish("mysqlchump", "./mysqlchump/mysqlchump.csproj", true);
 		});
 }
