@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using mysqlchump.Export;
 using mysqlchump.Import;
@@ -114,6 +115,8 @@ class Program
 
 			string connectionString = result.GetValueForOption(connectionStringOption);
 
+			var importMechanism = result.GetValueForOption(importMechanismOption);
+
 			if (string.IsNullOrWhiteSpace(connectionString))
 			{
 				var csBuilder = new MySqlConnectionStringBuilder();
@@ -122,13 +125,13 @@ class Program
 				csBuilder.Database = result.GetValueForOption(databaseOption);
 				csBuilder.UserID = result.GetValueForOption(usernameOption);
 				csBuilder.Password = result.GetValueForOption(passwordOption);
-				csBuilder.AllowLoadLocalInfile = true;
+
+				csBuilder.AllowLoadLocalInfile = importMechanism == ImportMechanism.LoadDataInfile;
 
 				connectionString = csBuilder.ToString();
 			}
 
 			var inputFormat = result.GetValueForOption(inputFormatOption);
-			var importMechanism = result.GetValueForOption(importMechanismOption);
 			var importTable = result.GetValueForOption(importTableOption);
 			var sourceTables = result.GetValueForOption(sourceTablesOption);
 			
@@ -353,7 +356,43 @@ class Program
 		bool redoLogEnabled = false;
 		string doubleWriteStatus = "ON";
 
-		Func<Task> resetAggressiveOptions = null;
+		bool setInfileToFalse = false;
+		bool resetAggressiveValues = false;
+
+		async Task resetVariables(bool log)
+		{
+			if (!setInfileToFalse && !resetAggressiveValues)
+				return;
+
+			await using var connection = new MySqlConnection(connectionString);
+
+			await connection.OpenAsync();
+
+			using var command = connection.CreateCommand();
+			command.CommandTimeout = 99999;
+
+			if (resetAggressiveValues)
+			{
+				Console.Error.WriteLine("Resetting unsafe database variables...");
+
+				command.CommandText = $"SET GLOBAL innodb_doublewrite = '{doubleWriteStatus}'";
+				await command.ExecuteNonQueryAsync();
+
+				if (redoLogEnabled)
+				{
+					command.CommandText = "ALTER INSTANCE ENABLE INNODB REDO_LOG;";
+					await command.ExecuteNonQueryAsync();
+				}
+			}
+			
+			if (setInfileToFalse)
+			{
+				Console.Error.WriteLine("Resetting local_infile value...");
+
+				command.CommandText = "SET GLOBAL local_infile = 0;";
+				await command.ExecuteNonQueryAsync();
+			}
+		}
 
 		try
 		{
@@ -363,16 +402,32 @@ class Program
 
 				connection.Open();
 
+				using var command = connection.CreateCommand();
+				command.CommandTimeout = 99999;
+
 				if (options.AggressiveUnsafe)
 				{
-					using var command = connection.CreateCommand();
-					command.CommandTimeout = 99999;
 					command.CommandText = "SET sql_log_bin = 'OFF';";
+					command.ExecuteScalar();
+				}
 
+				if (options.ImportMechanism == ImportMechanism.LoadDataInfile)
+				{
+					command.CommandText = "SET SESSION local_infile = 'ON';";
 					command.ExecuteScalar();
 				}
 
 				return connection;
+			};
+
+			Console.CancelKeyPress += (s, e) =>
+			{
+				Console.Error.WriteLine();
+				Console.Error.WriteLine("Attempting to shut down gracefully...");
+
+				Task.Run(async () => await resetVariables(true)).Wait();
+
+				Console.Error.WriteLine("Completed.");
 			};
 
 			await using (var connection = new MySqlConnection(connectionString))
@@ -382,33 +437,65 @@ class Program
 
 				connectionSuccessful = true;
 
+				using var command = connection.CreateCommand();
+				command.CommandTimeout = 99999;
+
+				// check for SUPER grant
+				command.CommandText = "SHOW GRANTS FOR CURRENT_USER;";
+
+				bool hasSuper = false;
+
+				var dbPerms = new List<string>();
+
+				var reader = command.ExecuteReader();
+				while (reader.Read())
+				{
+					var perms = reader.GetString(0);
+
+					var match = Regex.Match(perms, @"GRANT\s+(.+)\s+ON ([a-zA-Z0-9`*.]+) TO ");
+
+					if (!match.Success)
+						continue;
+
+					var targetDb = match.Groups[2].Value.Trim('`');
+
+					if (targetDb == "*.*" || targetDb == connection.Database)
+					{
+						var split = match.Groups[1].Value.Split(",");
+						dbPerms.AddRange(split.Select(x => x.Trim().ToUpper()));
+					}
+				}
+				reader.Close();
+
+				hasSuper = dbPerms.Contains("SUPER")
+					|| dbPerms.Contains("SYSTEM_VARIABLES_ADMIN");
+				// you are FUCKED on mariadb. there's no way to know
+
+
+				if (options.ImportMechanism == ImportMechanism.LoadDataInfile)
+				{
+					command.CommandText = "SELECT @@local_infile;";
+					bool canLoadInfile = (long)await command.ExecuteScalarAsync() == 1;
+
+					if (!canLoadInfile)
+					{
+						if (!hasSuper)
+						{
+							Console.Error.WriteLine("Import FAILED: The server is required to have local_infile=1 when using LoadDataInfile, and the user you have provided does not have privileges to configure it");
+							Environment.Exit(1);
+						}
+
+						setInfileToFalse = true;
+						command.CommandText = $"SET GLOBAL local_infile = 1;";
+						await command.ExecuteScalarAsync();
+					}
+				}
+
 				if (options.AggressiveUnsafe)
 				{
-					using var command = connection.CreateCommand();
-					command.CommandTimeout = 99999;
-
-					// check for SUPER grant
-					command.CommandText = "SHOW GRANTS FOR CURRENT_USER;";
-
-					bool hasSuper = false;
-
-					var reader = command.ExecuteReader();
-					while (reader.Read())
-					{
-						var perms = reader.GetString(0);
-
-						if (perms.Contains("SUPER", StringComparison.OrdinalIgnoreCase)
-							|| perms.Contains("ALL PRIVILEGES", StringComparison.OrdinalIgnoreCase))
-						{
-							hasSuper = true;
-							break;
-						}
-					}
-					reader.Close();
-
 					if (!hasSuper)
 					{
-						Console.Error.WriteLine("Import FAILED: The user you have provided does not have SUPER privilege, which is required when using --aggressive-unsafe");
+						Console.Error.WriteLine("Import FAILED: The user you have provided does not have SUPER or SYSTEM_VARIABLES_ADMIN privilege, which is required when using --aggressive-unsafe");
 						Environment.Exit(1);
 					}
 
@@ -423,37 +510,7 @@ class Program
 					command.CommandText = "SELECT @@innodb_doublewrite;";
 					doubleWriteStatus = (string)await command.ExecuteScalarAsync();
 
-					resetAggressiveOptions = async () =>
-					{
-						await using var connection = new MySqlConnection(connectionString);
-
-						await connection.OpenAsync();
-
-						using var command = connection.CreateCommand();
-						command.CommandTimeout = 99999;
-
-						command.CommandText = $"SET GLOBAL innodb_doublewrite = '{doubleWriteStatus}'";
-						await command.ExecuteNonQueryAsync();
-
-						if (redoLogEnabled)
-						{
-							command.CommandText = "ALTER INSTANCE ENABLE INNODB REDO_LOG;";
-							await command.ExecuteNonQueryAsync();
-						}
-					};
-
-					Console.CancelKeyPress += (s, e) =>
-					{
-						if (options.AggressiveUnsafe)
-						{
-							Console.Error.WriteLine("Attempting to shut down gracefully...");
-							Console.Error.WriteLine("Resetting unsafe database variables...");
-
-							Task.Run(async () => await resetAggressiveOptions()).Wait();
-
-							Console.Error.WriteLine("Completed.");
-						}
-					};
+					resetAggressiveValues = true;
 
 					if (redoLogEnabled)
 					{
@@ -507,10 +564,7 @@ class Program
 			if (!stdin)
 				await currentStream.DisposeAsync();
 
-			if (connectionSuccessful && resetAggressiveOptions != null)
-			{
-				await resetAggressiveOptions();
-			}
+			await resetVariables(false);
 		}
 	}
 
