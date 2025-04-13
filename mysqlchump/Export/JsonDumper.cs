@@ -88,10 +88,7 @@ public class JsonDumper : BaseDumper
 			if (Console.IsErrorRedirected)
 				return;
 
-			if (OperatingSystem.IsWindows())
-				Console.CursorLeft = 0;
-			else
-				Console.Error.Write("\u001b[1000D"); // move cursor to the left
+			Console.Error.Write("\u001b[1000D"); // move cursor to the left
 
 			double percentage = totalRowCount.HasValue ? 100 * currentRow / (double)totalRowCount.Value : 0;
 			if (percentage > 100 || double.IsNaN(percentage))

@@ -3,6 +3,7 @@ using Sylvan.Data.Csv;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.IO.Pipelines;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
@@ -11,27 +12,45 @@ namespace mysqlchump.Import;
 
 internal class CsvImporter : BaseImporter
 {
-	public async Task ImportAsync(Stream dataStream, string table, string[] columns, bool fixInvalidCsv, int parallelCount, bool useHeaders, bool insertIgnore, Func<MySqlConnection> createConnection)
+	protected StreamReader StreamReader { get; set; }
+	protected CsvDataReader CsvReader { get; set; }
+
+	protected Type[] ColumnTypes { get; set; }
+
+	public CsvImporter(ImportOptions options, Stream dataStream) : base(options, dataStream) { }
+
+	protected override async Task<(bool foundAnotherTable, string createTableSql, ulong? approxRows)> ReadToNextTable()
 	{
-		using var reader = new StreamReader(dataStream, Encoding.UTF8, leaveOpen: true);
+		StreamReader = new StreamReader(DataStream, Encoding.UTF8);
+		CsvReader = await CsvDataReader.CreateAsync(ImportOptions.CsvFixInvalid ? new MysqlInvalidCsvReader(StreamReader) : StreamReader,
+			new CsvDataReaderOptions { BufferSize = 128000, HasHeaders = ImportOptions.CsvUseHeaderRow, ResultSetMode = ResultSetMode.MultiResult });
 
-		var csvReader = await CsvDataReader.CreateAsync(fixInvalidCsv ? new MysqlInvalidCsvReader(reader) : reader, 
-			new CsvDataReaderOptions { BufferSize = 128000, HasHeaders = useHeaders, ResultSetMode = ResultSetMode.MultiResult });
+		return (true, null, null);
+	}
 
-		if (useHeaders)
+	protected override async Task<(bool shouldInsert, string tableName, ColumnInfo[] columns)> ProcessTableCreation(Func<MySqlConnection> createConnection, string createTableSql)
+	{
+		string[] columns;
+
+		if (ImportOptions.CsvUseHeaderRow)
 		{
-			columns = new string[csvReader.FieldCount];
+			columns = new string[CsvReader.FieldCount];
 
 			for (int i = 0; i < columns.Length; i++)
-				columns[i] = csvReader.GetName(i);
+				columns[i] = CsvReader.GetName(i);
+		}
+		else
+		{
+			columns = ImportOptions.CsvManualColumns;
 		}
 
-		Type[] columnTypes = new Type[columns.Length];
+		ColumnTypes = new Type[columns.Length];
+		var sqlColumnTypes = new string[columns.Length];
 
 		await using (var connection = createConnection())
 		{
 			await using var readCommand = connection.CreateCommand();
-			readCommand.CommandText = $"SELECT * FROM `{table}` LIMIT 0";
+			readCommand.CommandText = $"SELECT * FROM `{ImportOptions.TargetTable}` LIMIT 0";
 			await using var sqlReader = await readCommand.ExecuteReaderAsync();
 
 			var schema = await sqlReader.GetColumnSchemaAsync();
@@ -43,73 +62,52 @@ internal class CsvImporter : BaseImporter
 				var dbColumn = schema.FirstOrDefault(x => x.ColumnName.Equals(columnName, StringComparison.OrdinalIgnoreCase));
 
 				if (dbColumn == null)
-					throw new Exception($"Seemingly invalid column list; cannot find column '{columnName}'.{(useHeaders ? "" : " Maybe try specifying column list manually?")}");
+					throw new Exception($"Seemingly invalid column list; cannot find column '{columnName}'.{(ImportOptions.CsvUseHeaderRow ? "" : " Maybe try specifying column list manually?")}");
 
-				columnTypes[i] = dbColumn.DataType;
+				ColumnTypes[i] = dbColumn.DataType;
+				sqlColumnTypes[i] = dbColumn.DataTypeName;
 			}
 		}
 
-		await DoParallelSqlInserts(parallelCount, null, table, createConnection, async (channel, reportRowCount) =>
-		{
-			try
-			{
-				while (true)
-				{
-					var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(csvReader, table, columns, columnTypes, insertIgnore);
-
-					if (insertQuery == null)
-						break;
-
-					reportRowCount(rowCount);
-
-					await channel.Writer.WriteAsync(insertQuery);
-
-					if (!canContinue)
-						break;
-				}
-			}
-			catch (Exception ex)
-			{
-				Console.Error.WriteLine($"Error when reading data source @ R{csvReader.RowNumber} ({csvReader.GetString(0)})");
-				Console.Error.WriteLine(ex.ToString());
-			}
-
-			channel.Writer.Complete();
-		});
+		return (true, ImportOptions.TargetTable, columns.Select((x, i) => new ColumnInfo(x, sqlColumnTypes[i])).ToArray());
 	}
 
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);
 
-	private (bool canContinue, string insertQuery, int rowCount) GetNextInsertBatch(CsvDataReader csvReader, string table, string[] columnNames, Type[] columnTypes, bool insertIgnore)
+	protected override (int rows, bool canContinue, string sqlCommand) ReadDataSql(string tableName, ColumnInfo[] columns)
 	{
 		const int insertLimit = 4000;
 		int count = 0;
 
 		queryBuilder.Clear();
-		queryBuilder.Append($"INSERT{(insertIgnore ? " IGNORE" : "")} INTO `{table}` ({string.Join(',', columnNames)}) VALUES ");
+		queryBuilder.Append($"INSERT{(ImportOptions.InsertIgnore ? " IGNORE" : "")} INTO `{tableName}` ({string.Join(',', columns.Select(x => x.name))}) VALUES ");
 
 		bool needsComma = false;
+		bool canReadMore = true;
 
 		for (; count < insertLimit; count++)
 		{
-			if (!csvReader.Read())
+			if (!CsvReader.Read())
+			{
+				canReadMore = false;
 				break;
-			
+			}
+
 			queryBuilder.Append(needsComma ? ",(" : "(");
 			needsComma = true;
 
-			for (int i = 0; i < columnTypes.Length; i++)
+			for (int i = 0; i < ColumnTypes.Length; i++)
 			{
 				if (i > 0)
 					queryBuilder.Append(",");
-				
-				var rawValue = csvReader.GetString(i);
+
+				var rawValue = CsvReader.GetString(i);
 
 				if (MemoryExtensions.Equals(rawValue, "\\N", StringComparison.Ordinal))
 				{
 					queryBuilder.Append("NULL");
 				}
-				else if (columnTypes[i] == typeof(string) || columnTypes[i] == typeof(DateTime))
+				else if (ColumnTypes[i] == typeof(string) || ColumnTypes[i] == typeof(DateTime))
 				{
 					queryBuilder.Append('\'');
 					queryBuilder.Append(rawValue.Replace("'", "''"));
@@ -125,11 +123,20 @@ internal class CsvImporter : BaseImporter
 		}
 
 		if (count == 0)
-			return (false, null, 0);
+			return (0, false, null);
 
 		queryBuilder.Append(";");
 
-		return (!(count < insertLimit), queryBuilder.ToString(), count);
+		return (count, canReadMore, queryBuilder.ToString());
+	}
+	
+	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns) => throw new NotImplementedException();
+
+	public override void Dispose()
+	{
+		CsvReader?.DisposeAsync().AsTask().Wait();
+		StreamReader?.Dispose();
+		DataStream.Dispose();
 	}
 }
 

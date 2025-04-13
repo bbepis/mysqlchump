@@ -1,81 +1,28 @@
-using MySqlConnector;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
-using System.Threading.Channels;
 using System.IO.Pipelines;
 
 namespace mysqlchump.Import;
 
-internal class JsonImporter : BaseImporter
+public class JsonImporter : BaseImporter
 {
-	public async Task ImportAsync(Stream dataStream, Func<MySqlConnection> createConnection, ImportOptions options)
+	protected JsonTokenizer JsonTokenizer { get; }
+	private bool HasReadStart { get; set; } = false;
+
+	public JsonImporter(ImportOptions options, Stream dataStream) : base(options, dataStream)
 	{
-		var indexQueue = Channel.CreateUnbounded<(string text, string tableName, string indexName, bool isFk, string sql)>();
+		JsonTokenizer = new JsonTokenizer(DataStream);
+	}
 
-		Task reindexTask = null;
-
-		if (options.DeferIndexes)
-		{
-			reindexTask = Task.Run(async () =>
-			{
-				await using (var connection = createConnection())
-				{
-					using var command = connection.CreateCommand();
-					command.CommandTimeout = 9999999;
-
-					command.CommandText = "SET FOREIGN_KEY_CHECKS = 0;";
-					await command.ExecuteNonQueryAsync();
-					
-					await foreach (var (text, tableName, indexName, isFk, sql) in indexQueue.Reader.ReadAllAsync())
-					{
-						command.CommandTimeout = 9999999;
-
-						// check if index exists first
-						if (isFk)
-						{
-							command.CommandText = $@"
-SELECT COUNT(*)
-FROM INFORMATION_SCHEMA.REFERENTIAL_CONSTRAINTS
-WHERE CONSTRAINT_SCHEMA = '{connection.Database}'
-	AND TABLE_NAME = '{tableName}'
-	AND CONSTRAINT_NAME = '{indexName}';";
-						}
-						else
-						{
-							command.CommandText = $@"
-SELECT COUNT(*)
-FROM INFORMATION_SCHEMA.STATISTICS
-WHERE table_schema = '{connection.Database}'
-	AND table_name = '{tableName}'
-	AND INDEX_NAME = '{indexName}';";
-						}
-
-							var exists = (long)await command.ExecuteScalarAsync();
-
-						if (exists <= 0)
-						{
-							Console.Error.WriteLine(text);
-							command.CommandText = sql;
-
-							await command.ExecuteNonQueryAsync();
-						}
-					}
-
-					command.CommandText = "SET FOREIGN_KEY_CHECKS = 1;";
-					await command.ExecuteNonQueryAsync();
-				}
-			});
-		}
-
-		using var jsonReader = new JsonTokenizer(dataStream);
-
+	protected override async Task<(bool foundAnotherTable, string createTableSql, ulong? approxRows)> ReadToNextTable()
+	{
 		void AssertToken(JsonTokenType tokenType, object value = null)
 		{
-			var token = jsonReader.Read();
+			var token = JsonTokenizer.Read();
 
 			if (token == JsonTokenType.EndOfFile || token != tokenType)
 				goto failure;
@@ -83,295 +30,107 @@ WHERE table_schema = '{connection.Database}'
 			if (value == null)
 				return;
 
-			if ((token == JsonTokenType.String || token == JsonTokenType.PropertyName) && ((string)value).AsMemory().Equals(jsonReader.ValueString))
+			if ((token == JsonTokenType.String || token == JsonTokenType.PropertyName) && ((string)value).AsMemory().Equals(JsonTokenizer.ValueString))
 				goto failure;
 
-			if (token == JsonTokenType.NumberLong && Convert.ToInt64(value) != jsonReader.ValueLong)
+			if (token == JsonTokenType.NumberLong && Convert.ToInt64(value) != JsonTokenizer.ValueLong)
 				goto failure;
 
-			if (token == JsonTokenType.NumberDouble && Convert.ToDouble(value) != jsonReader.ValueDouble)
+			if (token == JsonTokenType.NumberDouble && Convert.ToDouble(value) != JsonTokenizer.ValueDouble)
 				goto failure;
 
-			if (token == JsonTokenType.Boolean && (bool)value != jsonReader.ValueBoolean)
+			if (token == JsonTokenType.Boolean && (bool)value != JsonTokenizer.ValueBoolean)
 				goto failure;
 
 			return;
-
-failure:
-				throw new InvalidOperationException(
-					$"Token type {jsonReader.TokenType} invalid at this position (expected {tokenType}{(value != null ? $", {value}" : "")})");
+		failure:
+			throw new InvalidOperationException(
+				$"Token type {JsonTokenizer.TokenType} invalid at this position (expected {tokenType}{(value != null ? $", {value}" : "")})");
 		}
 
-		AssertToken(JsonTokenType.StartObject);
-		AssertToken(JsonTokenType.PropertyName, "version");
-		AssertToken(JsonTokenType.NumberLong, 2L);
-		AssertToken(JsonTokenType.PropertyName, "tables");
-		AssertToken(JsonTokenType.StartArray);
-
-		async Task<bool> ProcessTable(JsonTokenizer jsonReader)
+		if (!HasReadStart)
 		{
-			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType == JsonTokenType.EndArray)
-				return false;
-
-			AssertToken(JsonTokenType.PropertyName, "name");
-			AssertToken(JsonTokenType.String);
-
-			string tableName = jsonReader.ValueString.ToString();
-
-			AssertToken(JsonTokenType.PropertyName, "create_statement");
-			AssertToken(JsonTokenType.String);
-
-			string createStatement = jsonReader.ValueString.ToString();
-
-			//Console.Error.WriteLine(createStatement);
-
-			var parsedTable = CreateTableParser.Parse(createStatement);
-
-			if (options.SetInnoDB)
-			{
-				parsedTable.Options["ENGINE"] = "InnoDB";
-
-				parsedTable.Options.Remove("COMPRESSION"); // tokudb
-				parsedTable.Options["ROW_FORMAT"] = "DYNAMIC";
-
-				createStatement = parsedTable.ToCreateTableSql();
-			}
-
-			if (options.SetCompressed)
-			{
-				parsedTable.Options["ROW_FORMAT"] = "COMPRESSED";
-
-				createStatement = parsedTable.ToCreateTableSql();
-			}
-
-			var removedIndexes = new List<Index>();
-			var removedFks = new List<ForeignKey>();
-
-			if (options.DeferIndexes || options.StripIndexes)
-			{
-				removedIndexes.AddRange(parsedTable.Indexes.Where(x => x.Type != IndexType.Primary));
-				parsedTable.Indexes.RemoveAll(x => x.Type != IndexType.Primary);
-
-				removedFks.AddRange(parsedTable.ForeignKeys);
-				parsedTable.ForeignKeys.Clear();
-
-				createStatement = parsedTable.ToCreateTableSql();
-			}
-
-			AssertToken(JsonTokenType.PropertyName, "columns");
 			AssertToken(JsonTokenType.StartObject);
-
-			var columns = new List<(string columnName, string type)>();
-
-			while (jsonReader.Read() != JsonTokenType.EndOfFile && jsonReader.TokenType == JsonTokenType.PropertyName)
-			{
-				var columnName = jsonReader.ValueString.ToString();
-				AssertToken(JsonTokenType.String);
-
-				columns.Add((columnName, jsonReader.ValueString.ToString()));
-			}
-
-			AssertToken(JsonTokenType.PropertyName, "approx_count");
-			
-			ulong? approxCount = jsonReader.Read() == JsonTokenType.Null ? null : (ulong?)jsonReader.ValueLong;
-
-			AssertToken(JsonTokenType.PropertyName, "rows");
+			AssertToken(JsonTokenType.PropertyName, "version");
+			AssertToken(JsonTokenType.NumberLong, 2L);
+			AssertToken(JsonTokenType.PropertyName, "tables");
 			AssertToken(JsonTokenType.StartArray);
 
-			if (options.SourceTables == null
-				|| options.SourceTables.Length == 0
-				|| options.SourceTables.Any(x => x == "*")
-				|| options.SourceTables.Any(x => tableName.Equals(x, StringComparison.OrdinalIgnoreCase)))
+			HasReadStart = true;
+		}
+		else
+		{
+			if (JsonTokenizer.TokenType == JsonTokenType.StartArray)
 			{
-				if (!options.NoCreate)
-					await using (var connection = createConnection())
-					{
-						using var command = connection.CreateCommand();
-
-						command.CommandTimeout = 9999999;
-
-						// check if table exists first
-						command.CommandText = $@"SELECT COUNT(*)
-							FROM information_schema.TABLES
-							WHERE TABLE_SCHEMA = '{connection.Database}' AND TABLE_NAME = '{tableName}'";
-
-						var exists = (long)await command.ExecuteScalarAsync();
-
-						if (exists != 0)
-						{
-							Console.Error.WriteLine($"Table '{tableName}' already exists, so it will not be created.");
-						}
-						else
-						{
-							command.CommandText = createStatement;
-							await command.ExecuteNonQueryAsync();
-						}
-					}
-
-				if (options.ImportMechanism == ImportMechanism.SqlStatements)
-				{
-					await DoParallelSqlInserts(options.ParallelThreads, approxCount, tableName, createConnection, async (channel, reportRowCount) =>
-					{
-						try
-						{
-							while (true)
-							{
-								var (canContinue, insertQuery, rowCount) = GetNextInsertBatch(jsonReader, tableName, columns, options.InsertIgnore);
-
-								reportRowCount(rowCount);
-
-								if (insertQuery == null)
-									break;
-
-								await channel.Writer.WriteAsync(insertQuery);
-
-								if (!canContinue)
-									break;
-							}
-						}
-						catch (Exception ex)
-						{
-							Console.Error.WriteLine($"Error when reading data source");
-							Console.Error.WriteLine(ex.ToString());
-						}
-
-						channel.Writer.Complete();
-					});
-				}
-				else if (options.ImportMechanism == ImportMechanism.LoadDataInfile)
-				{
-					await DoParallelCsvImports(options, approxCount, tableName, columns, createConnection, async (pipeWriters, reportRowCount) =>
-					{
-						var flushTasks = new Task[pipeWriters.Length];
-
-						try
-						{
-							while (true)
-							{
-								int writerIndex = 0;
-								PipeWriter writer;
-
-								while (true)
-								{
-									bool found = false;
-									for (int i = 0; i < pipeWriters.Length; i++)
-									{
-										if (flushTasks[i] != null && flushTasks[i].IsFaulted)
-											Console.WriteLine(flushTasks[i].Exception);
-
-										if (flushTasks[i] == null || flushTasks[i].IsCompleted)
-										{
-											writerIndex = i;
-											found = true;
-											break;
-										}
-									}
-
-									if (found)
-									{
-										writer = pipeWriters[writerIndex];
-										break;
-									}
-
-									// all writers are currently busy.
-									await Task.Delay(2);
-								}
-
-								var (rowCount, canContinue) = WriteBatchCsvPipe(jsonReader, writer, tableName, columns);
-
-								if (rowCount == 0)
-									break;
-
-								//await writer.FlushAsync();
-								flushTasks[writerIndex] = Task.Run(async () => await writer.FlushAsync());
-
-								reportRowCount(rowCount);
-
-								if (!canContinue)
-									break;
-							}
-
-							foreach (var writer in pipeWriters)
-								await writer.CompleteAsync();
-						}
-						catch (Exception ex)
-						{
-							Console.Error.WriteLine($"Error when reading data source");
-							Console.Error.WriteLine(ex.ToString());
-
-							foreach (var writer in pipeWriters)
-								await writer.CompleteAsync(ex);
-						}
-					});
-				}
-
-				if (options.DeferIndexes)
-				{
-					foreach (var index in removedIndexes)
-					{
-						await indexQueue.Writer.WriteAsync((
-							$"Creating index {tableName}.{index.Name}...",
-							tableName,
-							index.Name,
-							false,
-							$"ALTER TABLE `{tableName}` ADD {index.ToSql()};"));
-					}
-
-					foreach (var fk in removedFks)
-					{
-						await indexQueue.Writer.WriteAsync((
-							$"Creating foreign key {tableName}.{fk.Name}...",
-							tableName,
-							fk.Name,
-							true,
-							$"ALTER TABLE `{tableName}` ADD {fk.ToSql()};"));
-					}
-				}
-			}
-			else
-			{
-				Console.Error.WriteLine($"Skipping table '{tableName}' ({(approxCount.HasValue ? $"~{approxCount}" : "?")} rows)");
-
+				// skip to the end of the rows section
 				int layer = 0;
-
-				while (jsonReader.Read() != JsonTokenType.EndOfFile && layer >= 0)
+				while (JsonTokenizer.Read() != JsonTokenType.EndOfFile && layer >= 0)
 				{
-					if (jsonReader.TokenType == JsonTokenType.StartArray)
+					if (JsonTokenizer.TokenType == JsonTokenType.StartArray)
 						layer++;
-					else if (jsonReader.TokenType == JsonTokenType.EndArray)
+					else if (JsonTokenizer.TokenType == JsonTokenType.EndArray)
 						layer--;
 
 					if (layer < 0)
 						break;
 				}
 			}
-			
+
 			AssertToken(JsonTokenType.PropertyName, "actual_count");
 			AssertToken(JsonTokenType.NumberLong);
 
 			AssertToken(JsonTokenType.EndObject);
-
-			return true;
 		}
 
-		while (await ProcessTable(jsonReader)) { }
+		if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType == JsonTokenType.EndArray)
+			return (false, null, null);
 
-		indexQueue.Writer.Complete();
+		AssertToken(JsonTokenType.PropertyName, "name");
+		AssertToken(JsonTokenType.String);
 
-		if (reindexTask != null)
-			await reindexTask;
+		string tableName = JsonTokenizer.ValueString.ToString();
+
+		AssertToken(JsonTokenType.PropertyName, "create_statement");
+		AssertToken(JsonTokenType.String);
+
+		string createStatement = JsonTokenizer.ValueString.ToString();
+
+		//Console.Error.WriteLine(createStatement);
+
+
+
+		AssertToken(JsonTokenType.PropertyName, "columns");
+		AssertToken(JsonTokenType.StartObject);
+
+		var columns = new List<(string columnName, string type)>();
+
+		while (JsonTokenizer.Read() != JsonTokenType.EndOfFile && JsonTokenizer.TokenType == JsonTokenType.PropertyName)
+		{
+			var columnName = JsonTokenizer.ValueString.ToString();
+			AssertToken(JsonTokenType.String);
+
+			columns.Add((columnName, JsonTokenizer.ValueString.ToString()));
+		}
+
+		AssertToken(JsonTokenType.PropertyName, "approx_count");
+
+		ulong? approxCount = JsonTokenizer.Read() == JsonTokenType.Null ? null : (ulong?)JsonTokenizer.ValueLong;
+
+		AssertToken(JsonTokenType.PropertyName, "rows");
+		AssertToken(JsonTokenType.StartArray);
+
+		return (true, createStatement, approxCount);
 	}
 
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);
-
-	private (bool canContinue, string insertQuery, int rowCount) GetNextInsertBatch(JsonTokenizer jsonReader, string tableName, List<(string columnName, string type)> columns, bool insertIgnore)
+	protected override (int rows, bool canContinue, string sqlCommand) ReadDataSql(string tableName, ColumnInfo[] columns)
 	{
 		const int insertLimit = 2000;
 		int count = 0;
 
 		queryBuilder.Clear();
-		queryBuilder.Append($"INSERT{(insertIgnore ? " IGNORE" : "")} INTO `{tableName}` ({string.Join(',', columns.Select(x => $"`{x.columnName}`"))}) VALUES ");
-		
+		queryBuilder.Append($"INSERT{(ImportOptions.InsertIgnore ? " IGNORE" : "")} INTO `{tableName}` ({string.Join(',', columns.Select(x => $"`{x.name}`"))}) VALUES ");
+
 		bool needsComma = false;
 		bool canContinue = true;
 
@@ -379,71 +138,70 @@ failure:
 
 		for (; count < insertLimit; count++)
 		{
-			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType != JsonTokenType.StartArray)
+			if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType != JsonTokenType.StartArray)
 			{
 				canContinue = false;
 				break;
 			}
-			
+
 			queryBuilder.Append(needsComma ? ",(" : "(");
 			needsComma = true;
 
-			for (int columnNum = 0; columnNum < columns.Count; columnNum++)
+			for (int columnNum = 0; columnNum < columns.Length; columnNum++)
 			{
-				if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType == JsonTokenType.EndArray)
+				if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType == JsonTokenType.EndArray)
 					throw new InvalidDataException("Row ends prematurely");
 
 				if (columnNum > 0)
 					queryBuilder.Append(',');
-				
+
 				string writtenValue = null;
 
-				if (jsonReader.TokenType == JsonTokenType.Null)
+				if (JsonTokenizer.TokenType == JsonTokenType.Null)
 					writtenValue = "NULL";
 				else if (columns[columnNum].type == "BLOB")
 				{
-					if (b64Buffer.Length < jsonReader.ValueString.Length)
-						b64Buffer = new byte[jsonReader.ValueString.Length];
+					if (b64Buffer.Length < JsonTokenizer.ValueString.Length)
+						b64Buffer = new byte[JsonTokenizer.ValueString.Length];
 
-					if (!Convert.TryFromBase64Chars(jsonReader.ValueString.Span, b64Buffer, out var decodeLength))
-						throw new Exception($"Failed to decode base64 string: {jsonReader.ValueString.Span}");
+					if (!Convert.TryFromBase64Chars(JsonTokenizer.ValueString.Span, b64Buffer, out var decodeLength))
+						throw new Exception($"Failed to decode base64 string: {JsonTokenizer.ValueString.Span}");
 
 					queryBuilder.Append("_binary 0x");
 
 					writtenValue = Utility.ByteArrayToString(b64Buffer.AsSpan(0, decodeLength));
 				}
-				else if (jsonReader.TokenType == JsonTokenType.String)
-					writtenValue = $"'{jsonReader.ValueString.ToString().Replace("\\", "\\\\").Replace("'", "''")}'";
-				else if (jsonReader.TokenType == JsonTokenType.Boolean)
-					writtenValue = jsonReader.ValueBoolean ? "TRUE" : "FALSE";
+				else if (JsonTokenizer.TokenType == JsonTokenType.String)
+					writtenValue = $"'{JsonTokenizer.ValueString.ToString().Replace("\\", "\\\\").Replace("'", "''")}'";
+				else if (JsonTokenizer.TokenType == JsonTokenType.Boolean)
+					writtenValue = JsonTokenizer.ValueBoolean ? "TRUE" : "FALSE";
 				//else if (jsonReader.TokenType == JsonTokenType.Date)
 				//	writtenValue = $"'{(DateTime)value:yyyy-MM-dd HH:mm:ss}'";
-				else if (jsonReader.TokenType == JsonTokenType.NumberLong)
-					writtenValue = jsonReader.ValueLong.ToString();
-				else if (jsonReader.TokenType == JsonTokenType.NumberDouble)
-					writtenValue = jsonReader.ValueDouble.ToString();
+				else if (JsonTokenizer.TokenType == JsonTokenType.NumberLong)
+					writtenValue = JsonTokenizer.ValueLong.ToString();
+				else if (JsonTokenizer.TokenType == JsonTokenType.NumberDouble)
+					writtenValue = JsonTokenizer.ValueDouble.ToString();
 				else
-					throw new InvalidDataException($"Unknown token type: {jsonReader.TokenType}");
+					throw new InvalidDataException($"Unknown token type: {JsonTokenizer.TokenType}");
 
 				if (writtenValue != null)
 					queryBuilder.Append(writtenValue);
 			}
-
-			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType != JsonTokenType.EndArray)
+			if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType != JsonTokenType.EndArray)
 				throw new InvalidDataException("Row ends prematurely");
-			
+
 			queryBuilder.Append(')');
 		}
 
 		if (count == 0)
-			return (false, null, 0);
+			return (0, false, null);
 
 		queryBuilder.Append(';');
 
-		return (canContinue, queryBuilder.ToString(), count);
+		return (count, canContinue, queryBuilder.ToString());
 	}
 
-	private (int rows, bool canContinue) WriteBatchCsvPipe(JsonTokenizer jsonReader, PipeWriter pipeWriter, string tableName, List<(string columnName, string type)> columns)
+	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns)
 	{
 		bool canContinue = true;
 
@@ -555,7 +313,7 @@ failure:
 			//if (rows >= 2000)
 			//	break;
 
-			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType != JsonTokenType.StartArray)
+			if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType != JsonTokenType.StartArray)
 			{
 				canContinue = false;
 				break;
@@ -563,50 +321,50 @@ failure:
 			
 			WriteString("\n", span);
 
-			for (int columnNum = 0; columnNum < columns.Count; columnNum++)
+			for (int columnNum = 0; columnNum < columns.Length; columnNum++)
 			{
-				if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType == JsonTokenType.EndArray)
+				if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType == JsonTokenType.EndArray)
 					throw new InvalidDataException("Row ends prematurely");
 
 				if (columnNum > 0)
 					WriteString(",", span);
 
-				switch (jsonReader.TokenType)
+				switch (JsonTokenizer.TokenType)
 				{
 					case JsonTokenType.Null:
 						WriteString("\\N", span);
 						break;
 					case JsonTokenType.String:
 						// if (columns[columnNum].type == "BLOB")
-						SanitizeAndWrite(jsonReader.ValueString.Span, span);
+						SanitizeAndWrite(JsonTokenizer.ValueString.Span, span);
 						break;
 					case JsonTokenType.Boolean:
-						WriteString(jsonReader.ValueBoolean ? "1" : "0", span);
+						WriteString(JsonTokenizer.ValueBoolean ? "1" : "0", span);
 						break;
 					//case JsonToken.Date:
 					//	WriteString(((DateTime)value).ToString("yyyy-MM-dd HH:mm:ss"), span);
 					//	break;
 					case JsonTokenType.NumberLong:
 						// TODO: int.TryFormat
-						WriteString(jsonReader.ValueLong.ToString(), span);
+						WriteString(JsonTokenizer.ValueLong.ToString(), span);
 						break;
 					case JsonTokenType.NumberDouble:
 						// TODO: double.TryFormat
-						WriteString(jsonReader.ValueDouble.ToString(), span);
+						WriteString(JsonTokenizer.ValueDouble.ToString(), span);
 						break;
 					default:
 						if (columns[columnNum].type == "BLOB")
 						{
 							//WriteString(Utility.ByteArrayToString(Convert.FromBase64String((string)value)), span);
-							WriteString(jsonReader.ValueString.Span, span);
+							WriteString(JsonTokenizer.ValueString.Span, span);
 							break;
 						}
 						else
-							throw new InvalidDataException($"Unknown token type: {jsonReader.TokenType}");
+							throw new InvalidDataException($"Unknown token type: {JsonTokenizer.TokenType}");
 				}
 			}
 
-			if (jsonReader.Read() == JsonTokenType.EndOfFile || jsonReader.TokenType != JsonTokenType.EndArray)
+			if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType != JsonTokenType.EndArray)
 				throw new InvalidDataException("Row ends prematurely");
 
 			rows++;
@@ -617,4 +375,6 @@ failure:
 
 		return (rows, canContinue);
 	}
+
+	public override void Dispose() => JsonTokenizer.Dispose();
 }
