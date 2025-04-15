@@ -93,6 +93,7 @@ public class JsonDumper : BaseDumper
 	public override async Task FinishDump(PipeWriter writer)
 	{
 		JsonWriter.Write("]}");
+		JsonWriter.Flush();
 		JsonWriter = null;
 	}
 

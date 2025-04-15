@@ -99,6 +99,7 @@ namespace mysqlchump.Export
 
 			textWriter.Write("COMMIT;\n");
 			IsFirstTableForFile = false;
+			textWriter.Flush();
 		}
 
 		public override async Task FinishDump(PipeWriter writer)

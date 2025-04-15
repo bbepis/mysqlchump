@@ -15,20 +15,23 @@ public class PipeTextWriter
 		Writer = writer;
 	}
 
+	private byte[] Buffer = new byte[512 * 1024];
+
 	public void Write(ReadOnlySpan<char> str)
 	{
-		Span<byte> buffer = Writer.GetSpan(str.Length * 4); // UTF-8 max byte estimate
-
-		if (!Utility.NoBomUtf8.TryGetBytes(str, buffer, out int bytesWritten))
-			throw new Exception($"Could not encode string: {str}");
-
-		Writer.Advance(bytesWritten);
+	tryWrite:
+		if (!Utility.NoBomUtf8.TryGetBytes(str, Buffer.AsSpan(CurrentWritten), out int bytesWritten))
+		{
+			Flush();
+			goto tryWrite;
+		}
 
 		CurrentWritten += bytesWritten;
+	}
 
-		if (CurrentWritten >= FlushThreshold)
-		{
-			Writer.FlushAsync().AsTask().Wait();
-		}
+	public void Flush()
+	{
+		Writer.WriteAsync(Buffer.AsMemory(0, CurrentWritten)).AsTask().Wait();
+		CurrentWritten = 0;
 	}
 }
