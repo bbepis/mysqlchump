@@ -4,12 +4,14 @@ using System.CommandLine;
 using System.Data;
 using System.Diagnostics;
 using System.IO;
+using System.IO.Pipelines;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 using mysqlchump.Export;
 using mysqlchump.Import;
+using mysqlchump.SqlParsing;
 using MySqlConnector;
 
 namespace mysqlchump;
@@ -37,13 +39,12 @@ class Program
 		var selectOption = new Option<string>(new[] { "--select", "-q" }, () => "SELECT * FROM `{table}`", "The select query to use when filtering rows/columns. If not specified, will dump the entire table.\nTable being examined is specified with \"{table}\".");
 		var noCreationOption = new Option<bool>(new[] { "--no-creation" }, "Don't output table creation statements.");
 		var truncateOption = new Option<bool>(new[] { "--truncate" }, "Prepend data insertions with a TRUNCATE command.");
-		var appendOption = new Option<bool>(new[] { "--append" }, "If specified, will append to the specified file instead of overwriting.");
 		
 		var outputFileArgument = new Argument<string>("output location", "Specify either a file or a folder to output to. '-' for stdout, otherwise defaults to creating files in the current directory") { Arity = ArgumentArity.ZeroOrOne };
 
 		var exportCommand = new Command("export", "Exports data from a database")
 		{
-			tableOption, tablesOption, connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, outputFormatOption, selectOption, noCreationOption, truncateOption, appendOption, outputFileArgument
+			tableOption, tablesOption, connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, outputFormatOption, selectOption, noCreationOption, truncateOption, outputFileArgument
 		};
 
 		exportCommand.SetHandler(async context =>
@@ -73,13 +74,20 @@ class Program
 				csBuilder.Database = result.GetValueForOption(databaseOption);
 				csBuilder.UserID = result.GetValueForOption(usernameOption);
 				csBuilder.Password = result.GetValueForOption(passwordOption);
+				csBuilder.IgnoreCommandTransaction = true;
 
 				connectionString = csBuilder.ToString();
 			}
 
+			var options = new DumpOptions
+			{
+				SelectQuery = result.GetValueForOption(selectOption),
+				MysqlWriteCreateTable = !result.GetValueForOption(noCreationOption),
+				MysqlWriteTruncate = result.GetValueForOption(truncateOption)
+			};
+
 			context.ExitCode = await ExportMainAsync(tables, connectionString, result.GetValueForOption(outputFormatOption),
-				result.GetValueForOption(selectOption), result.GetValueForOption(noCreationOption), result.GetValueForOption(truncateOption),
-				result.GetValueForOption(appendOption), result.GetValueForArgument(outputFileArgument));
+				result.GetValueForArgument(outputFileArgument), options);
 		});
 
 		rootCommand.Add(exportCommand);
@@ -217,7 +225,7 @@ class Program
 		return rootCommand;
 	}
 
-	static async Task<int> ExportMainAsync(string[] tables, string connectionString, OutputFormatEnum outputFormat, string selectQuery, bool noCreation, bool truncate, bool append, string outputLocation)
+	static async Task<int> ExportMainAsync(string[] tables, string connectionString, OutputFormatEnum outputFormat, string outputLocation, DumpOptions options)
 	{
 		bool stdout = outputLocation == "-";
 		string folder = Directory.Exists(outputLocation)
@@ -226,11 +234,12 @@ class Program
 		bool folderMode = folder != null;
 
 		Stream currentStream = null;
+		Pipe pipeline = null;
+		Task pipelineReadTask = null;
 
 		string extension = outputFormat switch
 		{
 			OutputFormatEnum.mysql => "sql",
-			OutputFormatEnum.postgres => "sql",
 			OutputFormatEnum.csv => "csv",
 			OutputFormatEnum.json => "json",
 			_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
@@ -244,16 +253,16 @@ class Program
 
 			BaseDumper createDumper() => outputFormat switch
 			{
-				OutputFormatEnum.mysql => new MySqlDumper(connection),
-				OutputFormatEnum.postgres => new PostgresDumper(connection),
-				OutputFormatEnum.csv => new CsvDumper(connection),
-				OutputFormatEnum.json => new JsonDumper(connection),
+				OutputFormatEnum.mysql => new MySqlDumper(connection, options),
+				//OutputFormatEnum.postgres => new PostgresDumper(connection),
+				//OutputFormatEnum.csv => new CsvDumper(connection),
+				OutputFormatEnum.json => new JsonDumper(connection, options),
 				_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
 			};
 
 			BaseDumper dumper = createDumper();
 
-			if (tables.Length > 1 && !folderMode && !dumper.CompatibleWithMultiTableStdout)
+			if (tables.Length > 1 && !folderMode && !dumper.CanMultiplexTables)
 				throw new Exception("Selected dump format does not support multiple tables per file/stream");
 
 			await connection.OpenAsync();
@@ -288,8 +297,14 @@ class Program
 			{
 				currentStream = stdout
 					? Console.OpenStandardOutput()
-					: new FileStream(outputLocation, append ? FileMode.Append : FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 1024 * 1024);
+					: new FileStream(outputLocation, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 4096);
+
+				pipeline = new Pipe(new PipeOptions(pauseWriterThreshold: 20 * 1024 * 1024, resumeWriterThreshold: 15 * 1024 * 1024));
+				pipelineReadTask = pipeline.Reader.CopyToAsync(currentStream);
 			}
+
+			// TODO: query all tables upfront to ensure universal locking
+			await using var transaction = await connection.BeginTransactionAsync(IsolationLevel.Snapshot);
 
 			for (var i = 0; i < tables.Length; i++)
 			{
@@ -300,23 +315,28 @@ class Program
 					currentStream =
 						new FileStream(Path.Combine(folder, $"dump_{dateTime:yyyy-MM-dd_hh-mm-ss}_{table}.{extension}"),
 							FileMode.CreateNew);
+
+					pipeline = new Pipe(new PipeOptions(pauseWriterThreshold: 20 * 1024 * 1024, resumeWriterThreshold: 15 * 1024 * 1024));
+					pipelineReadTask = pipeline.Reader.CopyToAsync(currentStream);
 				}
 
-				string formattedQuery = selectQuery.Replace("{table}", table);
-
-				await dumper.WriteStartTableAsync(table, currentStream, !noCreation, truncate);
-
-				await using (var transaction = await connection.BeginTransactionAsync(IsolationLevel.RepeatableRead))
-				{
-					await dumper.WriteInsertQueries(table, formattedQuery, currentStream, transaction);
-				}
-
-				await dumper.WriteEndTableAsync(table, currentStream, !folderMode && (i + 1) < tables.Length);
+				await dumper.ExportAsync(pipeline.Writer, table);
 
 				if (folderMode)
 				{
+					await dumper.FinishDump(pipeline.Writer);
+					await pipeline.Writer.CompleteAsync();
+					await pipelineReadTask;
 					await currentStream.DisposeAsync();
 				}
+			}
+
+			if (!folderMode)
+			{
+				await dumper.FinishDump(pipeline.Writer);
+				await pipeline.Writer.CompleteAsync();
+				await pipelineReadTask;
+				await currentStream.DisposeAsync();
 			}
 
 			return 0;
@@ -616,7 +636,6 @@ WHERE
 internal enum OutputFormatEnum
 {
 	mysql,
-	postgres,
 	csv,
 	json
 }

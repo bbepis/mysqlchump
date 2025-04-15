@@ -1,12 +1,8 @@
 using System;
 using System.Buffers.Text;
-using System.Collections.Generic;
 using System.Data.Common;
 using System.Data.SqlTypes;
-using System.Diagnostics;
-using System.IO;
-using System.Linq;
-using System.Text;
+using System.IO.Pipelines;
 using System.Threading.Tasks;
 using MySqlConnector;
 
@@ -14,18 +10,18 @@ namespace mysqlchump.Export;
 
 public class JsonDumper : BaseDumper
 {
-	public JsonDumper(MySqlConnection connection) : base(connection) { }
+	public JsonDumper(MySqlConnection connection, DumpOptions dumpOptions) : base(connection, dumpOptions) { }
 
-	public override bool CompatibleWithMultiTableStdout => true;
+	public override bool CanMultiplexTables => true;
 
-	private StreamWriter JsonWriter { get; set; } = null;
-
-	public override async Task WriteStartTableAsync(string table, Stream outputStream, bool writeSchema, bool truncate)
+	private PipeTextWriter JsonWriter { get; set; } = null;
+	
+	protected override async Task PerformDump(string table, MySqlDataReader reader, PipeWriter writer, DbColumn[] schema, string createSql, ulong? estimatedRows)
 	{
 		if (JsonWriter == null)
 		{
 			// start writing new file
-			JsonWriter = new StreamWriter(outputStream, new UTF8Encoding(false), 20 * 1024 * 1024);
+			JsonWriter = new PipeTextWriter(writer);
 
 			JsonWriter.Write("{\"version\":2,\"tables\":[");
 		}
@@ -37,33 +33,13 @@ public class JsonDumper : BaseDumper
 		JsonWriter.Write("{\"name\":");
 		WriteJsonString(table);
 		JsonWriter.Write(",\"create_statement\":");
-		WriteJsonString(await GetCreateSql(table));
-	}
-
-	public override async Task WriteInsertQueries(string table, string query, Stream outputStream, MySqlTransaction transaction = null)
-	{
-		await using var selectCommand = new MySqlCommand(query, Connection, transaction);
-
-		selectCommand.CommandTimeout = 3600;
-
-		ulong? totalRowCount;
-
-		await using (var rowCountCommand = new MySqlCommand(query, Connection, transaction))
-		{
-			rowCountCommand.CommandText =
-				$"SELECT TABLE_ROWS FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = '{table}' AND TABLE_SCHEMA = '{Connection.Database}';";
-			totalRowCount = (ulong?)await rowCountCommand.ExecuteScalarAsync();
-		}
-
-		await using var reader = await selectCommand.ExecuteReaderAsync();
+		WriteJsonString(createSql);
 
 		JsonWriter.Write(",\"columns\":{");
 
-		Columns = (await reader.GetColumnSchemaAsync()).AsEnumerable().ToArray();
-
 		bool isFirst = true;
 
-		foreach (var column in Columns)
+		foreach (var column in schema)
 		{
 			if (!isFirst)
 				JsonWriter.Write(",");
@@ -75,118 +51,49 @@ public class JsonDumper : BaseDumper
 		}
 
 		JsonWriter.Write("},\"approx_count\":");
-		JsonWriter.Write(totalRowCount.HasValue ? totalRowCount.Value.ToString() : "null");
+		JsonWriter.Write(estimatedRows.HasValue ? estimatedRows.Value.ToString() : "null");
 		JsonWriter.Write(",\"rows\":[");
 
-		long rowCounter = 0;
-			
-		var dumpTimer = new Stopwatch();
-		dumpTimer.Start();
-			
-		void WriteProgress(long currentRow)
+		bool firstRow = true;
+
+		while (await reader.ReadAsync())
 		{
-			if (Console.IsErrorRedirected)
-				return;
+			if (!firstRow)
+				JsonWriter.Write(",");
 
-			Console.Error.Write("\u001b[1000D"); // move cursor to the left
+			firstRow = false;
+			JsonWriter.Write("[");
 
-			double percentage = totalRowCount.HasValue ? 100 * currentRow / (double)totalRowCount.Value : 0;
-			if (percentage > 100 || double.IsNaN(percentage))
+			for (int i = 0; i < schema.Length; i++)
 			{
-				// mysql stats are untrustworthy
-				percentage = 100;
-			}
-
-			Console.Error.Write($"{table} - {currentRow:N0} / {(totalRowCount.HasValue ? $"~{totalRowCount:N0}" : "?")} ({(totalRowCount.HasValue ? percentage.ToString("N2") : "?")} %)");
-		}
-		
-		
-
-		try
-		{
-			bool firstRow = true;
-
-			while (await reader.ReadAsync())
-			{
-				if (dumpTimer.ElapsedMilliseconds >= 1000)
-				{
-					WriteProgress(rowCounter);
-					dumpTimer.Restart();
-				}
-
-				if (!firstRow)
+				if (i > 0)
 					JsonWriter.Write(",");
 
-				firstRow = false;
-				JsonWriter.Write("[");
+				var column = schema[i];
 
-				for (int i = 0; i < Columns.Length; i++)
-				{
-					if (i > 0)
-						JsonWriter.Write(",");
+				object value;
 
-					var column = Columns[i];
+				if (column.DataType == typeof(decimal) && !reader.IsDBNull(i))
+					value = reader.GetMySqlDecimal(i);
+				else
+					value = reader[i];
 
-					object value;
-
-					if (column.DataType == typeof(decimal) && !reader.IsDBNull(i))
-						value = reader.GetMySqlDecimal(i);
-					else
-						value = reader[i];
-
-					WriteJsonMySqlValue(column, value);
-				}
-
-				JsonWriter.Write("]");
-				rowCounter++;
-			}
-		}
-		catch (Exception ex)
-		{
-			List<string> columnValues = new List<string>();
-
-			for (int i = 0; i < reader.FieldCount; i++)
-			{
-				try
-				{
-					if (Columns[i].DataType == typeof(decimal) && reader[i] != DBNull.Value)
-						columnValues.Add(reader.GetMySqlDecimal(i).ToString() ?? "<NULL>");
-					else
-						columnValues.Add(reader[i]?.ToString() ?? "<NULL>");
-				}
-				catch
-				{
-					columnValues.Add($"<ERROR> ({Columns[i].DataType})");
-				}
+				WriteJsonMySqlValue(column, value);
 			}
 
-			Console.Error.WriteLine();
-			Console.Error.WriteLine(string.Join(", ", Columns.Select(x => x.ColumnName)));
-			Console.Error.WriteLine(string.Join(", ", columnValues));
-
-			Console.Error.WriteLine(ex);
-
-			throw;
+			JsonWriter.Write("]");
+			ExportedRows++;
 		}
-			
-		WriteProgress(rowCounter);
-
-		if (!Console.IsErrorRedirected)
-			Console.Error.WriteLine();
 
 		JsonWriter.Write("],\"actual_count\":");
-		JsonWriter.Write(rowCounter.ToString());
+		JsonWriter.Write(ExportedRows.ToString());
 		JsonWriter.Write("}");
 	}
 
-	public override async Task WriteEndTableAsync(string table, Stream outputStream, bool tablesRemainingForStream)
+	public override async Task FinishDump(PipeWriter writer)
 	{
-		if (!tablesRemainingForStream)
-		{
-			JsonWriter.Write("]}");
-			JsonWriter.Close();
-			JsonWriter = null;
-		}
+		JsonWriter.Write("]}");
+		JsonWriter = null;
 	}
 
 	private void WriteJsonMySqlValue(DbColumn column, object value)
@@ -263,7 +170,7 @@ public class JsonDumper : BaseDumper
 
 	public void WriteJsonString(ReadOnlySpan<char> input)
 	{
-		JsonWriter.Write('"');
+		JsonWriter.Write("\"");
 
 		int runStart = 0;
 
@@ -319,6 +226,6 @@ public class JsonDumper : BaseDumper
 			JsonWriter.Write(input.Slice(runStart, input.Length - runStart));
 		}
 
-		JsonWriter.Write('\"');
+		JsonWriter.Write("\"");
 	}
 }

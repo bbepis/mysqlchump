@@ -1,126 +1,109 @@
 using System;
 using System.Data.Common;
 using System.Data.SqlTypes;
-using System.IO;
+using System.IO.Pipelines;
 using System.Linq;
-using System.Text;
 using System.Threading.Tasks;
 using MySqlConnector;
 
 namespace mysqlchump.Export
 {
-	public class MySqlDumper : BaseTextDumper
+	public class MySqlDumper : BaseDumper
 	{
-		public MySqlDumper(MySqlConnection connection) : base(connection) { }
+		public MySqlDumper(MySqlConnection connection, DumpOptions dumpOptions) : base(connection, dumpOptions) { }
 
-		public override bool CompatibleWithMultiTableStdout => true;
+		public override bool CanMultiplexTables => true;
 
-		public override async Task WriteStartTableAsync(string table, Stream outputStream, bool writeSchema, bool truncate)
+		private bool IsFirstTableForFile = true;
+
+		protected override async Task PerformDump(string table, MySqlDataReader reader, PipeWriter writer, DbColumn[] schema, string createSql, ulong? estimatedRows)
 		{
-			using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
+			var textWriter = new PipeTextWriter(writer);
 
-			if (writeSchema)
+			if (!IsFirstTableForFile)
+				textWriter.Write("\n\n\n");
+
+			if (DumpOptions.MysqlWriteCreateTable)
 			{
-				await writer.WriteAsync(await GetCreateSql(table));
-				await writer.WriteAsync(";\n\n\n");
+				textWriter.Write(createSql);
+				textWriter.Write(";\n\n\n");
 			}
-			
-			var autoIncrement = await GetAutoIncrementValue(table);
 
-			if (autoIncrement.HasValue)
-				await writer.WriteAsync($"ALTER TABLE `{table}` AUTO_INCREMENT={autoIncrement};\n\n");
-			
-			await writer.WriteAsync("SET SESSION time_zone = \"+00:00\";\n");
-			await writer.WriteAsync("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
-			await writer.WriteAsync("SET SESSION UNIQUE_CHECKS = 0;\n");
+			//var autoIncrement = await GetAutoIncrementValue(table);
+
+			//if (autoIncrement.HasValue)
+			//	textWriter.Write($"ALTER TABLE `{table}` AUTO_INCREMENT={autoIncrement};\n\n");
+
+			textWriter.Write("SET SESSION time_zone = \"+00:00\";\n");
+			textWriter.Write("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
+			textWriter.Write("SET SESSION UNIQUE_CHECKS = 0;\n");
 
 			//await writer.WriteAsync("ALTER INSTANCE DISABLE INNODB REDO_LOG;\n\n");
 
-			if (truncate)
-				await writer.WriteAsync($"TRUNCATE `{table}`;\n");
+			if (DumpOptions.MysqlWriteTruncate)
+				textWriter.Write($"TRUNCATE `{table}`;\n");
 
-			await writer.WriteAsync("SET autocommit=0;\n");
-			await writer.WriteAsync("START TRANSACTION;\n");
+			textWriter.Write("SET autocommit=0;\n");
+			textWriter.Write("START TRANSACTION;\n");
 
-			await writer.WriteAsync("\n");
-		}
+			textWriter.Write("\n");
 
-		public override async Task WriteEndTableAsync(string table, Stream outputStream, bool tablesRemainingForStream)
-		{
-			await using var writer = new StreamWriter(outputStream, Utility.NoBomUtf8, 4096, true);
-			
-			await writer.WriteAsync("COMMIT;\n");
-			//await writer.WriteAsync("ALTER INSTANCE ENABLE INNODB REDO_LOG;");
-
-			if (tablesRemainingForStream)
-				await writer.WriteAsync("\n\n\n");
-		}
-
-		private async Task<ulong?> GetAutoIncrementValue(string table, MySqlTransaction transaction = null)
-		{
-			string databaseName = Connection.Database;
-
-			const string commandText =
-				"SELECT AUTO_INCREMENT " +
-				"FROM INFORMATION_SCHEMA.TABLES " +
-				"WHERE TABLE_SCHEMA = @databasename AND TABLE_NAME = @tablename";
-
-			await using var createTableCommand = new MySqlCommand(commandText, Connection, transaction)
-				.SetParam("@databasename", databaseName)
-				.SetParam("@tablename", table);
-
-
-			var result = await createTableCommand.ExecuteScalarAsync();
-
-			if (result == DBNull.Value)
-				return null;
-
-			return Convert.ToUInt64(result);
-		}
-
-		protected override void StartInsertBatch(string table, DbDataReader reader, StringBuilder builder)
-		{
-			builder.AppendLine($"INSERT INTO `{table}` ({string.Join(", ", Columns.Select(column => $"`{column.ColumnName}`"))}) VALUES");
-		}
-
-		protected override void CreateInsertLine(DbDataReader reader, StringBuilder builder)
-		{
-			builder.Append("(");
-
-			bool rowStart = true;
-			foreach (var column in Columns)
+			while (true)
 			{
-				if (!rowStart)
-					builder.Append(", ");
+				int currentRowCount = 0;
+				int maxInsertLength = 2048;
+				bool hasEnded = false;
 
-				object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal))
-				               && reader is MySqlDataReader mysqlReader
-							   && !reader.IsDBNull(column.ColumnOrdinal!.Value)
-					? mysqlReader.GetMySqlDecimal(column.ColumnName)
-					: reader[column.ColumnName];
+				textWriter.Write($"INSERT INTO `{table}` ({string.Join(", ", schema.Select(column => $"`{column.ColumnName}`"))}) VALUES\n");
 
-				builder.Append(GetMySqlStringRepresentation(column, value));
+				while (currentRowCount <= maxInsertLength)
+				{
+					if (!await reader.ReadAsync())
+					{
+						hasEnded = true;
+						break;
+					}
 
-				rowStart = false;
+					if (currentRowCount > 0)
+						textWriter.Write(",");
+
+					textWriter.Write("(");
+
+					for (int i = 0; i < schema.Length; i++)
+					{
+						DbColumn column = schema[i];
+
+						if (i > 0)
+							textWriter.Write(", ");
+
+						object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal))
+									   && reader is MySqlDataReader mysqlReader
+									   && !reader.IsDBNull(column.ColumnOrdinal!.Value)
+							? mysqlReader.GetMySqlDecimal(column.ColumnName)
+							: reader[column.ColumnName];
+
+						textWriter.Write(GetMySqlStringRepresentation(column, value));
+					}
+
+					textWriter.Write(")");
+
+					currentRowCount++;
+					ExportedRows++;
+				}
+
+				textWriter.Write(";\n\n");
+
+				if (hasEnded)
+					break;
 			}
 
-			builder.Append(")");
+			textWriter.Write("COMMIT;\n");
+			IsFirstTableForFile = false;
 		}
 
-		protected override void WriteInsertContinuation(StringBuilder builder)
+		public override async Task FinishDump(PipeWriter writer)
 		{
-			builder.AppendLine(",");
-			
-		}
-
-		protected override void WriteInsertEnd(StringBuilder builder)
-		{
-			builder.AppendLine(";");
-		}
-
-		protected override void EndInsertBatch(DbDataReader reader, StringBuilder builder)
-		{
-			builder.AppendLine(";\n\n");
+			IsFirstTableForFile = true;
 		}
 
 		protected static string GetMySqlStringRepresentation(DbColumn column, object value)
