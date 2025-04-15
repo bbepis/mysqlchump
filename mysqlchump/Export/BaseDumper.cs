@@ -42,7 +42,6 @@ public abstract class BaseDumper
 		var dumpTimer = new Stopwatch();
 		dumpTimer.Start();
 
-		var columns = await GetSchemaColumns(formattedQuery);
 		var createSql = await GetCreateSql(table);
 		ulong? estimatedRowCount = await GetEstimatedRowCount(table);
 
@@ -52,6 +51,7 @@ public abstract class BaseDumper
 		selectCommand.CommandTimeout = 3600;
 
 		using var reader = await selectCommand.ExecuteReaderAsync();
+		var columns = reader.GetColumnSchema().AsEnumerable().ToArray();
 
 		ExportedRows = 0;
 
@@ -128,17 +128,6 @@ public abstract class BaseDumper
 		command.CommandText = @"SET SESSION time_zone = ""+00:00"";";
 
 		await command.ExecuteNonQueryAsync();
-	}
-
-	protected async Task<DbColumn[]> GetSchemaColumns(string query)
-	{
-		await using var command = Connection.CreateCommand();
-		command.CommandText = query;
-
-		await using var reader = command.ExecuteReader();
-		//await reader.ReadAsync();
-
-		return (await reader.GetColumnSchemaAsync()).ToArray();
 	}
 
 	protected async Task<string> GetCreateSql(string table)

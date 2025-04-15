@@ -33,28 +33,32 @@ namespace mysqlchump.Export
 
 			//if (autoIncrement.HasValue)
 			//	textWriter.Write($"ALTER TABLE `{table}` AUTO_INCREMENT={autoIncrement};\n\n");
-
-			textWriter.Write("SET SESSION time_zone = \"+00:00\";\n");
-			textWriter.Write("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
-			textWriter.Write("SET SESSION UNIQUE_CHECKS = 0;\n");
+			if (IsFirstTableForFile)
+			{
+				textWriter.Write("SET SESSION time_zone = \'+00:00\';\n");
+				textWriter.Write("SET SESSION FOREIGN_KEY_CHECKS = 0;\n");
+				textWriter.Write("SET SESSION UNIQUE_CHECKS = 0;\n");
+				textWriter.Write("SET autocommit=0;\n");
+			}
 
 			//await writer.WriteAsync("ALTER INSTANCE DISABLE INNODB REDO_LOG;\n\n");
 
 			if (DumpOptions.MysqlWriteTruncate)
 				textWriter.Write($"TRUNCATE `{table}`;\n");
 
-			textWriter.Write("SET autocommit=0;\n");
 			textWriter.Write("START TRANSACTION;\n");
 
 			textWriter.Write("\n");
 
+			var insertString = $"INSERT INTO `{table}` ({string.Join(", ", schema.Select(column => $"`{column.ColumnName}`"))}) VALUES\n";
+
 			while (true)
 			{
 				int currentRowCount = 0;
-				int maxInsertLength = 2048;
+				int maxInsertLength = 8192;
 				bool hasEnded = false;
 
-				textWriter.Write($"INSERT INTO `{table}` ({string.Join(", ", schema.Select(column => $"`{column.ColumnName}`"))}) VALUES\n");
+				textWriter.Write(insertString);
 
 				while (currentRowCount <= maxInsertLength)
 				{
@@ -76,13 +80,12 @@ namespace mysqlchump.Export
 						if (i > 0)
 							textWriter.Write(", ");
 
-						object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal))
-									   && reader is MySqlDataReader mysqlReader
-									   && !reader.IsDBNull(column.ColumnOrdinal!.Value)
-							? mysqlReader.GetMySqlDecimal(column.ColumnName)
-							: reader[column.ColumnName];
+						object value = column.DataType == typeof(decimal)
+							&& !reader.IsDBNull(column.ColumnOrdinal!.Value)
+							? reader.GetMySqlDecimal(i)
+							: reader[i];
 
-						textWriter.Write(GetMySqlStringRepresentation(column, value));
+						WriteMySqlStringRepresentation(column, value, textWriter);
 					}
 
 					textWriter.Write(")");
@@ -107,56 +110,112 @@ namespace mysqlchump.Export
 			IsFirstTableForFile = true;
 		}
 
-		protected static string GetMySqlStringRepresentation(DbColumn column, object value)
+		protected static void WriteMySqlStringRepresentation(DbColumn column, object value, PipeTextWriter textWriter)
 		{
 			if (value == null || value == DBNull.Value)
-				return "NULL";
-
-			var columnType = column.DataType;
-
-			if (columnType == typeof(byte)
-				|| columnType == typeof(sbyte)
-				|| columnType == typeof(ushort)
-				|| columnType == typeof(short)
-				|| columnType == typeof(uint)
-				|| columnType == typeof(int)
-				|| columnType == typeof(ulong)
-				|| columnType == typeof(long)
-				|| columnType == typeof(float)
-				|| columnType == typeof(double)
-				|| columnType == typeof(decimal))
 			{
-				return value.ToString();
+				textWriter.Write("NULL");
+				return;
 			}
 
-			if (columnType == typeof(MySqlDecimal))
+			switch (value)
 			{
-				return ((MySqlDecimal)value).ToString();
+				case byte:
+				case sbyte:
+				case ushort:
+				case short:
+				case uint:
+				case int:
+				case ulong:
+				case long:
+				case float:
+				case double:
+					textWriter.Write(value.ToString());
+					return;
+				case bool:
+					textWriter.Write((bool)value ? "1" : "0");
+					return;
+				case string:
+					WriteMysqlString((string)value, textWriter);
+					return;
+				case byte[]:
+					textWriter.Write("_binary 0x");
+					textWriter.WriteHex((byte[])value);
+					return;
+				case MySqlDecimal:
+					textWriter.Write(((MySqlDecimal)value).ToString());
+					return;
+				case DateTime:
+					var dtValue = (DateTime)value;
+
+					Span<char> charOutput = stackalloc char[24];
+
+					if (!dtValue.TryFormat(charOutput, out int written, "yyyy-MM-dd HH:mm:ss"))
+						throw new Exception("Failed to format date string");
+
+					textWriter.Write(charOutput.Slice(0, written));
+					return;
 			}
-
-			if (columnType == typeof(DateTime))
-			{
-				var dtValue = (DateTime)value;
-				return $"'{dtValue:yyyy-MM-dd HH:mm:ss}'";
-			}
-
-			if (columnType == typeof(bool))
-				return (bool)value ? "1" : "0";
-
-			if (columnType == typeof(string))
-			{
-				var innerString = MySqlHelper.EscapeString(value.ToString())
-					.Replace("\r", "\\r")
-					.Replace("\n", "\\n")
-					.Replace("\0", "\\0");
-
-				return $"'{innerString}'";
-			}
-
-			if (columnType == typeof(byte[]))
-				return "_binary 0x" + Utility.ByteArrayToString((byte[])value);
 
 			throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
+		}
+
+		private static void WriteMysqlString(ReadOnlySpan<char> input, PipeTextWriter writer)
+		{
+			writer.Write("\'");
+
+			int runStart = 0;
+
+			for (int i = 0; i < input.Length; i++)
+			{
+				char c = input[i];
+				string escapeSequence = null;
+
+				switch (c)
+				{
+					case '\"':
+						escapeSequence = "\\\"";
+						break;
+					case '\'':
+						escapeSequence = "\\\'";
+						break;
+					case '\\':
+						escapeSequence = "\\\\";
+						break;
+					case '\b':
+						escapeSequence = "\\b";
+						break;
+					case '\n':
+						escapeSequence = "\\n";
+						break;
+					case '\r':
+						escapeSequence = "\\r";
+						break;
+					case '\t':
+						escapeSequence = "\\t";
+						break;
+					case '\0':
+						escapeSequence = "\\0";
+						break;
+				}
+
+				if (escapeSequence != null)
+				{
+					if (i > runStart)
+					{
+						writer.Write(input.Slice(runStart, i - runStart));
+					}
+					writer.Write(escapeSequence);
+					runStart = i + 1;
+				}
+			}
+
+			if (runStart < input.Length)
+			{
+				writer.Write(input.Slice(runStart, input.Length - runStart));
+			}
+
+			writer.Write("\'");
 		}
 	}
 }

@@ -251,16 +251,14 @@ class Program
 
 			await using var connection = new MySqlConnection(connectionString);
 
-			BaseDumper createDumper() => outputFormat switch
+			BaseDumper dumper = outputFormat switch
 			{
 				OutputFormatEnum.mysql => new MySqlDumper(connection, options),
 				//OutputFormatEnum.postgres => new PostgresDumper(connection),
-				//OutputFormatEnum.csv => new CsvDumper(connection),
+				OutputFormatEnum.csv => new CsvDumper(connection, options),
 				OutputFormatEnum.json => new JsonDumper(connection, options),
 				_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
 			};
-
-			BaseDumper dumper = createDumper();
 
 			if (tables.Length > 1 && !folderMode && !dumper.CanMultiplexTables)
 				throw new Exception("Selected dump format does not support multiple tables per file/stream");
@@ -300,7 +298,7 @@ class Program
 					: new FileStream(outputLocation, FileMode.Create, FileAccess.ReadWrite, FileShare.Read, 4096);
 
 				pipeline = new Pipe(new PipeOptions(pauseWriterThreshold: 20 * 1024 * 1024, resumeWriterThreshold: 15 * 1024 * 1024));
-				pipelineReadTask = pipeline.Reader.CopyToAsync(currentStream);
+				pipelineReadTask = Task.Run(() => pipeline.Reader.CopyToAsync(currentStream));
 			}
 
 			// TODO: query all tables upfront to ensure universal locking
@@ -317,7 +315,7 @@ class Program
 							FileMode.CreateNew);
 
 					pipeline = new Pipe(new PipeOptions(pauseWriterThreshold: 20 * 1024 * 1024, resumeWriterThreshold: 15 * 1024 * 1024));
-					pipelineReadTask = pipeline.Reader.CopyToAsync(currentStream);
+					pipelineReadTask = Task.Run(() => pipeline.Reader.CopyToAsync(currentStream));
 				}
 
 				await dumper.ExportAsync(pipeline.Writer, table);

@@ -234,9 +234,10 @@ public class SqlTokenizer
 		// Identifier or keyword. Also handle _binary. If an identifier starts with '_' then we
 		// read the complete identifier and, if it equals "_binary" (case–insensitive) we
 		// potentially treat an immediately following 0x prefix as a binary blob.
+		ReadOnlyMemory<char> ident;
 		if (ch == '_')
 		{
-			ReadOnlyMemory<char> ident = ReadIdentifierToken();
+			ident = ReadIdentifierToken();
 			if (ident.Span.Equals("_binary", StringComparison.OrdinalIgnoreCase))
 			{
 				SkipWhiteSpace();
@@ -263,26 +264,24 @@ public class SqlTokenizer
 		}
 
 		// Otherwise process an identifier.
+		ident = ReadIdentifierToken();
+
+		if (ident.Length == 0)
 		{
-			ReadOnlyMemory<char> ident = ReadIdentifierToken();
-
-			if (ident.Length == 0)
-			{
-				var debug = _buffer.AsSpan(_position - 10);
-				throw new Exception("Found invalid identifier");
-			}
-
-			if (IsNullKeyword(ident))
-			{
-				TokenType = SqlTokenType.Null;
-			}
-			else
-			{
-				TokenType = SqlTokenType.Identifier;
-			}
-			ValueString = ident;
-			return TokenType;
+			var debug = _buffer.AsSpan(_position - 10);
+			throw new Exception("Found invalid identifier");
 		}
+
+		if (IsNullKeyword(ident))
+		{
+			TokenType = SqlTokenType.Null;
+		}
+		else
+		{
+			TokenType = SqlTokenType.Identifier;
+		}
+		ValueString = ident;
+		return TokenType;
 	}
 
 	// Read a string literal token. This method assumes that the current character was a
