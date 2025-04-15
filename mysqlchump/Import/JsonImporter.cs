@@ -135,6 +135,7 @@ public class JsonImporter : BaseImporter
 		bool canContinue = true;
 
 		byte[] b64Buffer = new byte[64];
+		char[] conversionBuffer = new char[64];
 
 		for (; count < insertLimit; count++)
 		{
@@ -159,7 +160,8 @@ public class JsonImporter : BaseImporter
 
 				if (JsonTokenizer.TokenType == JsonTokenType.Null)
 					writtenValue = "NULL";
-				else if (columns[columnNum].type == "BLOB")
+				else if (columns[columnNum].type.Equals("BLOB", StringComparison.OrdinalIgnoreCase)
+					|| columns[columnNum].type.Contains("BINARY", StringComparison.OrdinalIgnoreCase))
 				{
 					if (b64Buffer.Length < JsonTokenizer.ValueString.Length)
 						b64Buffer = new byte[JsonTokenizer.ValueString.Length];
@@ -170,6 +172,17 @@ public class JsonImporter : BaseImporter
 					queryBuilder.Append("_binary 0x");
 
 					writtenValue = Utility.ByteArrayToString(b64Buffer.AsSpan(0, decodeLength));
+				}
+				else if (columns[columnNum].type.Contains("DATE", StringComparison.OrdinalIgnoreCase))
+				{
+					var date = DateTime.ParseExact(JsonTokenizer.ValueString.Span, "yyyy-MM-ddTH:mm:ss.fffZ", null);
+
+					if (!date.TryFormat(conversionBuffer, out int writtenChars, "yyyy-MM-dd HH:mm:ss"))
+						throw new Exception($"Failed to convert date: {JsonTokenizer.ValueString.Span}");
+
+					queryBuilder.Append("'");
+					queryBuilder.Append(conversionBuffer.AsSpan(0, writtenChars));
+					queryBuilder.Append("'");
 				}
 				else if (JsonTokenizer.TokenType == JsonTokenType.String)
 					writtenValue = $"'{JsonTokenizer.ValueString.ToString().Replace("\\", "\\\\").Replace("'", "''")}'";
@@ -187,6 +200,7 @@ public class JsonImporter : BaseImporter
 				if (writtenValue != null)
 					queryBuilder.Append(writtenValue);
 			}
+
 			if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType != JsonTokenType.EndArray)
 				throw new InvalidDataException("Row ends prematurely");
 
@@ -211,8 +225,6 @@ public class JsonImporter : BaseImporter
 		var currentPosition = 0;
 		int rows = 0;
 
-		var encoding = new UTF8Encoding(false);
-
 		void WriteString(ReadOnlySpan<char> data, Span<byte> span)
 		{
 			// UTF-8 max bytes per character is 4
@@ -231,7 +243,7 @@ public class JsonImporter : BaseImporter
 				//	Task.Run(() => pipeWriter.FlushAsync()).Wait();
 			}
 
-			currentPosition += encoding.GetBytes(data, span.Slice(currentPosition));
+			currentPosition += Utility.NoBomUtf8.GetBytes(data, span.Slice(currentPosition));
 		}
 
 		void SanitizeAndWrite(ReadOnlySpan<char> input, Span<byte> span)

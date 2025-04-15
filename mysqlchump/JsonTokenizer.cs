@@ -60,7 +60,7 @@ public class JsonTokenizer : IDisposable
         Buffer = new char[bufferSize];
 
         // Construct a StreamReader (using UTF-8; adjust as needed).
-        StreamReader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: bufferSize, leaveOpen: true);
+        StreamReader = new StreamReader(stream, Utility.NoBomUtf8, detectEncodingFromByteOrderMarks: true, bufferSize: bufferSize, leaveOpen: true);
         // Prime the buffer.
         FillBuffer();
     }
@@ -295,7 +295,7 @@ public class JsonTokenizer : IDisposable
                         for (int i = 0; i < 4; i++)
                         {
                             char hex = Buffer[BufferPos++];
-                            code = (code << 4) | HexToInt(hex);
+                            code = code << 4 | HexToInt(hex);
                         }
                         sb.Append((char)code);
                         break;

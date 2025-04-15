@@ -84,7 +84,7 @@ class Program
 
 		rootCommand.Add(exportCommand);
 		
-		var inputFormatOption = new Option<InputFormat>(new[] { "--input-format", "-f" }, () => InputFormat.mysqlForceBatch, "The input format to use when importing.");
+		var inputFormatOption = new Option<InputFormat>(new[] { "--input-format", "-f" }, () => InputFormat.mysql, "The input format to use when importing.");
 		var importMechanismOption = new Option<ImportMechanism>(new[] { "--import-mechanism", "-m" }, () => ImportMechanism.SqlStatements, "The import mechanism to use when importing.");
 		var sourceTablesOption = new Option<string[]>(new[] { "--source-table", "-T" }, "(JSON only) List of tables to import from, from a dump that contains multiple tables");
 		var parallelOption = new Option<byte>(new[] { "--parallel", "-j" }, () => 12, "The amount of parallel insert threads to use.");
@@ -532,6 +532,7 @@ class Program
 			{
 				InputFormat.csv => new CsvImporter(options, currentStream),
 				InputFormat.json => new JsonImporter(options, currentStream),
+				InputFormat.mysql => new MysqlImporter(options, currentStream),
 				_ => throw new ArgumentOutOfRangeException(nameof(inputFormat), $"Unknown import format: {inputFormat}"),
 			};
 
@@ -622,8 +623,7 @@ internal enum OutputFormatEnum
 
 public enum InputFormat
 {
-	mysqlForceBatch,
-	mysqlRaw,
+	mysql,
 	csv,
 	json
 }

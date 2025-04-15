@@ -10,7 +10,7 @@ class JsonTokenizerTests
 	public void DoJsonTest()
 	{
 		using var fileStream = new FileStream(@"C:\Temp\archived.moe-foolfuuka-20250331.full.json", FileMode.Open);
-		var reader = new StreamReader(fileStream, Encoding.UTF8, leaveOpen: true);
+		var reader = new StreamReader(fileStream, Utility.NoBomUtf8, leaveOpen: true);
 
 		var stopwatch = Stopwatch.StartNew();
 
@@ -22,7 +22,7 @@ class JsonTokenizerTests
 		reader.Close();
 
 		fileStream.Position = 0;
-		reader = new StreamReader(fileStream, Encoding.UTF8, leaveOpen: true);
+		reader = new StreamReader(fileStream, Utility.NoBomUtf8, leaveOpen: true);
 		var tokenizer = new JsonTokenizer(fileStream);
 
 		stopwatch.Restart();
@@ -33,7 +33,7 @@ class JsonTokenizerTests
 	[Test]
 	public void DoSmallJsonTest()
 	{
-		using var jsonStream = new MemoryStream(Encoding.UTF8.GetBytes("{\"propName\": [1,2,3]}"));
+		using var jsonStream = new MemoryStream(Utility.NoBomUtf8.GetBytes("{\"propName\": [1,2,3]}"));
 
 		var tokenizer = new JsonTokenizer(jsonStream);
 

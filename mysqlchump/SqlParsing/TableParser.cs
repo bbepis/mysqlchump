@@ -3,9 +3,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using static System.Runtime.InteropServices.JavaScript.JSType;
 
-namespace mysqlchump;
+namespace mysqlchump.SqlParsing;
 
 /// <summary>
 /// Represents a database table.
@@ -217,20 +216,21 @@ public enum IndexType
 
 public class CreateTableParser
 {
-	private readonly Tokenizer _tokenizer;
-	private Token _currentToken;
+	private readonly SqlTokenizer _tokenizer;
+	private SqlTokenType _currentToken;
 
-	public CreateTableParser(Tokenizer tokenizer)
+	public CreateTableParser(SqlTokenizer tokenizer, bool shouldRead = true)
 	{
 		_tokenizer = tokenizer;
-		_currentToken = _tokenizer.GetNextToken();
+
+		_currentToken = shouldRead ? _tokenizer.Read() : _tokenizer.TokenType;
 	}
 
 	public static Table Parse(string tableSql)
 	{
 		try
 		{
-			return new CreateTableParser(new Tokenizer(new MemoryStream(Encoding.UTF8.GetBytes(tableSql)))).Parse();
+			return new CreateTableParser(new SqlTokenizer(new MemoryStream(Utility.NoBomUtf8.GetBytes(tableSql)))).Parse();
 		}
 		catch
 		{
@@ -245,37 +245,47 @@ public class CreateTableParser
 	/// </summary>
 	public Table Parse()
 	{
-		Expect(TokenType.Identifier, "CREATE");
-		_currentToken = _tokenizer.GetNextToken();
-
-		Expect(TokenType.Identifier, "TABLE");
-		_currentToken = _tokenizer.GetNextToken();
-
-		while (_currentToken.Type == TokenType.Identifier
-			&& (_currentToken.Value == "IF" || _currentToken.Value == "NOT" || _currentToken.Value == "EXISTS"))
+		if (_currentToken != SqlTokenType.Identifier || !_tokenizer.ValueString.Span.Equals("TABLE", StringComparison.OrdinalIgnoreCase))
 		{
-			_currentToken = _tokenizer.GetNextToken();
+			Expect(SqlTokenType.Identifier, "CREATE");
+			_currentToken = _tokenizer.Read();
+
+			Expect(SqlTokenType.Identifier, "TABLE");
+		}
+		_currentToken = _tokenizer.Read();
+
+		while (_tokenizer.TokenType == SqlTokenType.Identifier
+			&& (
+				_tokenizer.ValueString.Span.Equals("IF", StringComparison.OrdinalIgnoreCase)
+				|| _tokenizer.ValueString.Span.Equals("NOT", StringComparison.OrdinalIgnoreCase)
+				|| _tokenizer.ValueString.Span.Equals("EXISTS", StringComparison.OrdinalIgnoreCase)
+				))
+		{
+			_currentToken = _tokenizer.Read();
 		}
 
 		// Table name could be optionally quoted
-		string tableName = ParseIdentifier();
+		string tableName = _tokenizer.ValueString.ToString();
 		var table = new Table { Name = tableName };
 
-		Expect(TokenType.LeftBrace);
-		_currentToken = _tokenizer.GetNextToken();
+		_currentToken = _tokenizer.Read();
+		Expect(SqlTokenType.LeftBrace);
+		_currentToken = _tokenizer.Read();
 
 		// Parse columns and constraints
-		while (_currentToken.Type != TokenType.RightBrace && _currentToken.Type != TokenType.EOF)
+		while (_currentToken != SqlTokenType.RightBrace && _currentToken != SqlTokenType.EOF)
 		{
-			if (_currentToken.Type == TokenType.Identifier)
+			if (_currentToken == SqlTokenType.Identifier)
 			{
-				string identifier = _currentToken.Value.ToUpperInvariant();
-				if (identifier == "PRIMARY"
+				string identifier = _tokenizer.ValueString.ToString().ToUpperInvariant();
+				if (!_tokenizer.IdentifierWasEscaped
+					&& (identifier == "PRIMARY"
 					|| identifier == "UNIQUE"
 					|| identifier == "KEY"
+					|| identifier == "INDEX"
 					|| identifier == "CONSTRAINT"
 					|| identifier == "FOREIGN"
-					|| identifier == "FULLTEXT")
+					|| identifier == "FULLTEXT"))
 				{
 					ParseTableConstraint(table);
 				}
@@ -290,49 +300,57 @@ public class CreateTableParser
 			}
 
 			// After each column or constraint, expect a comma or closing parenthesis
-			if (_currentToken.Type == TokenType.Comma)
+			if (_currentToken == SqlTokenType.Comma)
 			{
-				_currentToken = _tokenizer.GetNextToken();
+				_currentToken = _tokenizer.Read();
 			}
 		}
 
-		Expect(TokenType.RightBrace);
-		_currentToken = _tokenizer.GetNextToken();
+		Expect(SqlTokenType.RightBrace);
+		_currentToken = _tokenizer.Read();
 
-		while (_currentToken.Type == TokenType.Identifier)
+		while (_currentToken == SqlTokenType.Identifier)
 		{
-			var tableOption = _currentToken.Value;
+			var tableOption = _tokenizer.ValueString.ToString();
 
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
 
-			while (_currentToken.Type == TokenType.Identifier)
+			while (_currentToken == SqlTokenType.Identifier)
 			{
-				tableOption += " " + _currentToken.Value;
-				_currentToken = _tokenizer.GetNextToken();
+				tableOption += " " + _tokenizer.ValueString.ToString();
+				_currentToken = _tokenizer.Read();
 			}
 
-			Expect(TokenType.Equals);
+			Expect(SqlTokenType.Equals);
 
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
 
-			if (_currentToken.Type != TokenType.Identifier
-				&& _currentToken.Type != TokenType.String
-				&& _currentToken.Type != TokenType.Number)
-				Expect(TokenType.Identifier);
+			if (_currentToken != SqlTokenType.Identifier
+				&& _currentToken != SqlTokenType.String
+				&& _currentToken != SqlTokenType.Integer
+				&& _currentToken != SqlTokenType.Double)
+				Expect(SqlTokenType.Identifier);
 
-			string value = _currentToken.Value;
+			string value = _currentToken switch
+			{
+				SqlTokenType.Identifier => _tokenizer.ValueString.ToString(),
+				SqlTokenType.String => _tokenizer.ValueString.ToString(),
+				SqlTokenType.Integer => _tokenizer.ValueLong.ToString(),
+				SqlTokenType.Double => _tokenizer.ValueDouble.ToString(),
+				_ => throw new ArgumentOutOfRangeException(nameof(_currentToken)),
+			};
 
-			if (_currentToken.Type == TokenType.String)
+			if (_currentToken == SqlTokenType.String)
 				value = $"'{value.Replace("'", "\\'").Replace("\\", "\\\\")}'";
 
 			table.Options[tableOption] = value;
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
 		}
 
-		if (_currentToken.Type != TokenType.Semicolon && _currentToken.Type != TokenType.EOF)
-			Expect(TokenType.Semicolon);
+		if (_currentToken != SqlTokenType.Semicolon && _currentToken != SqlTokenType.EOF)
+			Expect(SqlTokenType.Semicolon);
 
-		_currentToken = _tokenizer.GetNextToken();
+		_currentToken = _tokenizer.Read();
 
 		return table;
 	}
@@ -355,92 +373,92 @@ public class CreateTableParser
 		};
 
 		// Parse column constraints (NULL/NOT NULL, DEFAULT, AUTO_INCREMENT, etc.)
-		while (_currentToken.Type == TokenType.Identifier
-			|| _currentToken.Type == TokenType.BinaryBlob
-			|| _currentToken.Type == TokenType.Null)
+		while (_currentToken == SqlTokenType.Identifier
+			|| _currentToken == SqlTokenType.BinaryBlob
+			|| _currentToken == SqlTokenType.Null)
 		{
-			if (_currentToken.Type == TokenType.Null)
+			if (_currentToken == SqlTokenType.Null)
 			{
 				// redundant
 				column.IsNullable = true;
-				_currentToken = _tokenizer.GetNextToken();
+				_currentToken = _tokenizer.Read();
 				continue;
 			}
 
-			string constraint = _currentToken.Value.ToUpperInvariant();
+			string constraint = _tokenizer.ValueString.ToString().ToUpperInvariant();
 			switch (constraint)
 			{
 				case "NOT":
-					_currentToken = _tokenizer.GetNextToken();
-					if (_currentToken.Type != TokenType.Null)
-						Expect(TokenType.Identifier, "NULL");
+					_currentToken = _tokenizer.Read();
+					if (_currentToken != SqlTokenType.Null)
+						Expect(SqlTokenType.Identifier, "NULL");
 					column.IsNullable = false;
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					break;
 				case "NULL":
 					column.IsNullable = true;
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					break;
 				case "DEFAULT":
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 
 					bool checkEndBrace = false;
-					if (_currentToken.Type == TokenType.LeftBrace)
+					if (_currentToken == SqlTokenType.LeftBrace)
 					{
 						checkEndBrace = true;
-						_currentToken = _tokenizer.GetNextToken();						
+						_currentToken = _tokenizer.Read();						
 					}
 
 					column.DefaultValue = ParseDefaultValue();
 
-					if (checkEndBrace && _currentToken.Type == TokenType.RightBrace)
-						_currentToken = _tokenizer.GetNextToken();
+					if (checkEndBrace && _currentToken == SqlTokenType.RightBrace)
+						_currentToken = _tokenizer.Read();
 					break;
 				case "AUTO_INCREMENT":
 					column.IsAutoIncrement = true;
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					break;
 				case "PRIMARY":
 					// Handle PRIMARY KEY specified per column
-					_currentToken = _tokenizer.GetNextToken();
-					Expect(TokenType.Identifier, "KEY");
+					_currentToken = _tokenizer.Read();
+					Expect(SqlTokenType.Identifier, "KEY");
 					column.IsPrimaryKey = true;
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					break;
 				case "UNIQUE":
 					// Handle UNIQUE per column
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					column.Extra = "UNIQUE";
 					break;
 				case "UNSIGNED":
 					// Handle UNIQUE per column
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					column.Unsigned = true;
 					break;
 				case "COLLATE":
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 
-					if (_currentToken.Type != TokenType.Identifier && _currentToken.Type != TokenType.String)
-						Expect(TokenType.String);
+					if (_currentToken != SqlTokenType.Identifier && _currentToken != SqlTokenType.String)
+						Expect(SqlTokenType.String);
 
-					column.Collation = _currentToken.Value;
-					_currentToken = _tokenizer.GetNextToken();
+					column.Collation = _tokenizer.ValueString.ToString();
+					_currentToken = _tokenizer.Read();
 					break;
 				case "CHARACTER":
-					_currentToken = _tokenizer.GetNextToken();
-					Expect(TokenType.Identifier, "SET");
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
+					Expect(SqlTokenType.Identifier, "SET");
+					_currentToken = _tokenizer.Read();
 
-					if (_currentToken.Type != TokenType.Identifier && _currentToken.Type != TokenType.String)
-						Expect(TokenType.String);
+					if (_currentToken != SqlTokenType.Identifier && _currentToken != SqlTokenType.String)
+						Expect(SqlTokenType.String);
 
-					column.CharacterSet = _currentToken.Value;
-					_currentToken = _tokenizer.GetNextToken();
+					column.CharacterSet = _tokenizer.ValueString.ToString();
+					_currentToken = _tokenizer.Read();
 					break;
 				default:
 					// Handle other constraints or extras as needed
 					// For simplicity, ignore unhandled constraints
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					break;
 			}
 		}
@@ -453,14 +471,14 @@ public class CreateTableParser
 	/// </summary>
 	private void ParseTableConstraint(Table table)
 	{
-		string constraintType = _currentToken.Value.ToUpperInvariant();
+		string constraintType = _tokenizer.ValueString.ToString().ToUpperInvariant();
 
 		if (constraintType == "PRIMARY")
 		{
 			// PRIMARY KEY (`col1`, `col2`)
-			_currentToken = _tokenizer.GetNextToken();
-			Expect(TokenType.Identifier, "KEY");
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
+			Expect(SqlTokenType.Identifier, "KEY");
+			_currentToken = _tokenizer.Read();
 
 			var index = new Index
 			{
@@ -474,12 +492,12 @@ public class CreateTableParser
 		else if (constraintType == "UNIQUE")
 		{
 			// UNIQUE KEY `key_name` (`col1`, `col2`)
-			_currentToken = _tokenizer.GetNextToken();
-			Expect(TokenType.Identifier, "KEY");
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
+			Expect(SqlTokenType.Identifier, "KEY");
+			_currentToken = _tokenizer.Read();
 
 			string keyName = null;
-			if (_currentToken.Type == TokenType.Identifier)
+			if (_currentToken == SqlTokenType.Identifier)
 			{
 				keyName = ParseIdentifier();
 			}
@@ -490,7 +508,7 @@ public class CreateTableParser
 				Name = keyName
 			};
 
-			Expect(TokenType.LeftBrace);
+			Expect(SqlTokenType.LeftBrace);
 
 			index.Columns.AddRange(ParseColumnList());
 
@@ -499,12 +517,12 @@ public class CreateTableParser
 		else if (constraintType == "FULLTEXT")
 		{
 			// FULLTEXT KEY `key_name` (`col1`)
-			_currentToken = _tokenizer.GetNextToken();
-			Expect(TokenType.Identifier, "KEY");
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
+			Expect(SqlTokenType.Identifier, "KEY");
+			_currentToken = _tokenizer.Read();
 
 			string keyName = null;
-			if (_currentToken.Type == TokenType.Identifier)
+			if (_currentToken == SqlTokenType.Identifier)
 			{
 				keyName = ParseIdentifier();
 			}
@@ -515,24 +533,24 @@ public class CreateTableParser
 				Name = keyName
 			};
 
-			Expect(TokenType.LeftBrace);
+			Expect(SqlTokenType.LeftBrace);
 
 			index.Columns.AddRange(ParseColumnList());
 
 			table.Indexes.Add(index);
 		}
-		else if (constraintType == "KEY")
+		else if (constraintType == "KEY" || constraintType == "INDEX")
 		{
 			// KEY `key_name` (`col1`, `col2`)
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
 			string keyName = null;
-			if (_currentToken.Type == TokenType.Identifier)
+			if (_currentToken == SqlTokenType.Identifier)
 			{
 				keyName = ParseIdentifier();
 			}
 
-			Expect(TokenType.LeftBrace);
-			//_currentToken = _tokenizer.GetNextToken();
+			Expect(SqlTokenType.LeftBrace);
+			//_currentToken = _tokenizer.Read();
 
 			var index = new Index
 			{
@@ -547,13 +565,13 @@ public class CreateTableParser
 		else if (constraintType == "CONSTRAINT")
 		{
 			// CONSTRAINT `fk_name` FOREIGN KEY (`col1`) REFERENCES `ref_table` (`ref_col1`) ON DELETE CASCADE ON UPDATE RESTRICT
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
 			string constraintName = ParseIdentifier();
 
-			Expect(TokenType.Identifier, "FOREIGN");
-			_currentToken = _tokenizer.GetNextToken();
-			Expect(TokenType.Identifier, "KEY");
-			_currentToken = _tokenizer.GetNextToken();
+			Expect(SqlTokenType.Identifier, "FOREIGN");
+			_currentToken = _tokenizer.Read();
+			Expect(SqlTokenType.Identifier, "KEY");
+			_currentToken = _tokenizer.Read();
 
 			var fk = new ForeignKey
 			{
@@ -562,54 +580,54 @@ public class CreateTableParser
 
 			fk.Columns.AddRange(ParseColumnList().Select(x => x.ColumnName));
 
-			Expect(TokenType.Identifier, "REFERENCES");
-			_currentToken = _tokenizer.GetNextToken();
+			Expect(SqlTokenType.Identifier, "REFERENCES");
+			_currentToken = _tokenizer.Read();
 
 			string refTable = ParseIdentifier();
 			fk.ReferenceTable = refTable;
 
-			Expect(TokenType.LeftBrace);
-			//_currentToken = _tokenizer.GetNextToken();
+			Expect(SqlTokenType.LeftBrace);
+			//_currentToken = _tokenizer.Read();
 			fk.ReferenceColumns.AddRange(ParseColumnList().Select(x => x.ColumnName));
 			//Expect(TokenType.RightBrace);
-			//_currentToken = _tokenizer.GetNextToken();
+			//_currentToken = _tokenizer.Read();
 
 			// Optional ON DELETE and ON UPDATE clauses
-			while (_currentToken.Type == TokenType.Identifier)
+			while (_currentToken == SqlTokenType.Identifier)
 			{
-				string action = _currentToken.Value.ToUpperInvariant();
+				string action = _tokenizer.ValueString.ToString().ToUpperInvariant();
 				if (action == "ON")
 				{
-					_currentToken = _tokenizer.GetNextToken();
-					string eventType = _currentToken.Value.ToUpperInvariant();
+					_currentToken = _tokenizer.Read();
+					string eventType = _tokenizer.ValueString.ToString().ToUpperInvariant();
 					if (eventType == "DELETE")
 					{
-						_currentToken = _tokenizer.GetNextToken();
-						if (_currentToken.Type == TokenType.Identifier)
+						_currentToken = _tokenizer.Read();
+						if (_currentToken == SqlTokenType.Identifier)
 						{
-							fk.OnDelete = _currentToken.Value.ToUpperInvariant();
+							fk.OnDelete = _tokenizer.ValueString.ToString().ToUpperInvariant();
 
 							if (fk.OnDelete == "NO")
 							{
-								_currentToken = _tokenizer.GetNextToken();
-								fk.OnDelete += " " + _currentToken.Value.ToUpperInvariant();
+								_currentToken = _tokenizer.Read();
+								fk.OnDelete += " " + _tokenizer.ValueString.ToString().ToUpperInvariant();
 							}
-							_currentToken = _tokenizer.GetNextToken();
+							_currentToken = _tokenizer.Read();
 						}
 					}
 					else if (eventType == "UPDATE")
 					{
-						_currentToken = _tokenizer.GetNextToken();
-						if (_currentToken.Type == TokenType.Identifier)
+						_currentToken = _tokenizer.Read();
+						if (_currentToken == SqlTokenType.Identifier)
 						{
-							fk.OnUpdate = _currentToken.Value.ToUpperInvariant();
+							fk.OnUpdate = _tokenizer.ValueString.ToString().ToUpperInvariant();
 
 							if (fk.OnUpdate == "NO")
 							{
-								_currentToken = _tokenizer.GetNextToken();
-								fk.OnUpdate += " " + _currentToken.Value.ToUpperInvariant();
+								_currentToken = _tokenizer.Read();
+								fk.OnUpdate += " " + _tokenizer.ValueString.ToString().ToUpperInvariant();
 							}
-							_currentToken = _tokenizer.GetNextToken();
+							_currentToken = _tokenizer.Read();
 						}
 					}
 				}
@@ -626,10 +644,10 @@ public class CreateTableParser
 			throw new Exception($"Unsupported table constraint type: {constraintType}");
 		}
 
-		if (_currentToken.Type == TokenType.Identifier && _currentToken.Value == "USING")
+		if (_currentToken == SqlTokenType.Identifier && _tokenizer.ValueString.ToString() == "USING")
 		{
-			_currentToken = _tokenizer.GetNextToken();
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
+			_currentToken = _tokenizer.Read();
 		}
 	}
 
@@ -639,30 +657,30 @@ public class CreateTableParser
 	private List<Index.IndexColumn> ParseColumnList()
 	{
 		var columns = new List<Index.IndexColumn>();
-		Expect(TokenType.LeftBrace);
-		_currentToken = _tokenizer.GetNextToken();
+		Expect(SqlTokenType.LeftBrace);
+		_currentToken = _tokenizer.Read();
 
-		while (_currentToken.Type != TokenType.RightBrace && _currentToken.Type != TokenType.EOF)
+		while (_currentToken != SqlTokenType.RightBrace && _currentToken != SqlTokenType.EOF)
 		{
 			Index.IndexColumn column = ParseIdentifier();
 			columns.Add(column);
 
 			// check for prefix length
-			if (_currentToken.Type == TokenType.LeftBrace)
+			if (_currentToken == SqlTokenType.LeftBrace)
 			{
-				_currentToken = _tokenizer.GetNextToken();
-				Expect(TokenType.Number);
+				_currentToken = _tokenizer.Read();
+				Expect(SqlTokenType.Integer);
 
-				column.PrefixLength = int.Parse(_currentToken.Value);
+				column.PrefixLength = (int)_tokenizer.ValueLong;
 
-				_currentToken = _tokenizer.GetNextToken();
-				Expect(TokenType.RightBrace);
-				_currentToken = _tokenizer.GetNextToken();
+				_currentToken = _tokenizer.Read();
+				Expect(SqlTokenType.RightBrace);
+				_currentToken = _tokenizer.Read();
 			}
 
-			if (_currentToken.Type == TokenType.Comma)
+			if (_currentToken == SqlTokenType.Comma)
 			{
-				_currentToken = _tokenizer.GetNextToken();
+				_currentToken = _tokenizer.Read();
 			}
 			else
 			{
@@ -670,8 +688,8 @@ public class CreateTableParser
 			}
 		}
 
-		Expect(TokenType.RightBrace);
-		_currentToken = _tokenizer.GetNextToken();
+		Expect(SqlTokenType.RightBrace);
+		_currentToken = _tokenizer.Read();
 
 		return columns;
 	}
@@ -684,48 +702,58 @@ public class CreateTableParser
 		StringBuilder sb = new StringBuilder();
 
 		// Data type can be multiple tokens, e.g., ENUM('a','b'), VARCHAR(255), etc.
-		if (_currentToken.Type != TokenType.Identifier && _currentToken.Type != TokenType.BinaryBlob)
+		if (_currentToken != SqlTokenType.Identifier && _currentToken != SqlTokenType.BinaryBlob)
 			throw new Exception($"Expected data type identifier, found {_currentToken}");
 
-		sb.Append(_currentToken.Value);
-		_currentToken = _tokenizer.GetNextToken();
+		sb.Append(_tokenizer.ValueString.ToString());
+		_currentToken = _tokenizer.Read();
 
 		// Handle type parameters, e.g., VARCHAR(255), DECIMAL(10,2), ENUM('a','b')
-		if (_currentToken.Type == TokenType.LeftBrace)
+		if (_currentToken == SqlTokenType.LeftBrace)
 		{
 			sb.Append("(");
-			_currentToken = _tokenizer.GetNextToken();
+			_currentToken = _tokenizer.Read();
 
 			int parenCount = 1;
-			while (parenCount > 0 && _currentToken.Type != TokenType.EOF)
+			while (parenCount > 0 && _currentToken != SqlTokenType.EOF)
 			{
-				if (_currentToken.Type == TokenType.RightBrace)
+				if (_currentToken == SqlTokenType.RightBrace)
 				{
 					parenCount--;
 					sb.Append(")");
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					break;
 				}
-				else if (_currentToken.Type == TokenType.LeftBrace)
+				else if (_currentToken == SqlTokenType.LeftBrace)
 				{
 					parenCount++;
 					sb.Append("(");
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 				}
-				else if (_currentToken.Type == TokenType.String)
+				else if (_currentToken == SqlTokenType.String)
 				{
-					sb.Append($"'{_currentToken.Value}'");
-					_currentToken = _tokenizer.GetNextToken();
+					sb.Append($"'{_tokenizer.ValueString.ToString()}'");
+					_currentToken = _tokenizer.Read();
+				}
+				else if (_currentToken == SqlTokenType.Integer)
+				{
+					sb.Append(_tokenizer.ValueLong.ToString());
+					_currentToken = _tokenizer.Read();
+				}
+				else if (_currentToken == SqlTokenType.Double)
+				{
+					sb.Append(_tokenizer.ValueDouble.ToString());
+					_currentToken = _tokenizer.Read();
 				}
 				else
 				{
-					sb.Append(_currentToken.Value);
-					if (_currentToken.Type == TokenType.Comma)
+					sb.Append(_tokenizer.ValueString.ToString());
+					if (_currentToken == SqlTokenType.Comma)
 						sb.Append(",");
 					//	sb.Append(", ");
 					//else
 					//	sb.Append(" ");
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 				}
 			}
 		}
@@ -738,10 +766,10 @@ public class CreateTableParser
 	/// </summary>
 	private string ParseIdentifier()
 	{
-		if (_currentToken.Type == TokenType.Identifier)
+		if (_currentToken == SqlTokenType.Identifier)
 		{
-			string identifier = _currentToken.Value;
-			_currentToken = _tokenizer.GetNextToken();
+			string identifier = _tokenizer.ValueString.ToString();
+			_currentToken = _tokenizer.Read();
 			return identifier;
 		}
 		else
@@ -755,35 +783,39 @@ public class CreateTableParser
 	/// </summary>
 	private string ParseDefaultValue()
 	{
-		switch (_currentToken.Type)
+		switch (_currentToken)
 		{
-			case TokenType.String:
-				string escaped = _currentToken.Value.Replace("'", "''");
+			case SqlTokenType.String:
+				string escaped = _tokenizer.ValueString.ToString().Replace("'", "''");
 				string stringValue = $"'{escaped}'";
-				_currentToken = _tokenizer.GetNextToken();
+				_currentToken = _tokenizer.Read();
 				return stringValue;
-			case TokenType.Number:
-				string number = _currentToken.Value;
-				_currentToken = _tokenizer.GetNextToken();
+			case SqlTokenType.Integer:
+				string number = _tokenizer.ValueLong.ToString();
+				_currentToken = _tokenizer.Read();
 				return number;
-			case TokenType.Null:
-				_currentToken = _tokenizer.GetNextToken();
+			case SqlTokenType.Double:
+				string numberDouble = _tokenizer.ValueDouble.ToString();
+				_currentToken = _tokenizer.Read();
+				return numberDouble;
+			case SqlTokenType.Null:
+				_currentToken = _tokenizer.Read();
 				return "NULL";
-			case TokenType.Identifier:
-				string identifier = _currentToken.Value.ToUpperInvariant();
+			case SqlTokenType.Identifier:
+				string identifier = _tokenizer.ValueString.ToString().ToUpperInvariant();
 				if (identifier == "CURRENT_TIMESTAMP")
 				{
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					return "CURRENT_TIMESTAMP";
 				}
 				else
 				{
 					// Handle other expressions if necessary
-					_currentToken = _tokenizer.GetNextToken();
+					_currentToken = _tokenizer.Read();
 					return identifier;
 				}
 			default:
-				throw new Exception($"Unexpected token type {_currentToken.Type} for default value.");
+				throw new Exception($"Unexpected token type {_currentToken} for default value.");
 		}
 	}
 
@@ -791,12 +823,12 @@ public class CreateTableParser
 	/// Expects the current token to be of a specific type and optionally a specific value.
 	/// Throws an exception if not matched.
 	/// </summary>
-	private void Expect(TokenType type, string value = null)
+	private void Expect(SqlTokenType type, string value = null)
 	{
-		if (_currentToken.Type != type)
-			throw new Exception($"Expected token type {type}, found {_currentToken.Type}.");
+		if (_currentToken != type)
+			throw new Exception($"Expected token type {type}, found {_currentToken}.");
 
-		if (value != null && !string.Equals(_currentToken.Value, value, StringComparison.OrdinalIgnoreCase))
-			throw new Exception($"Expected token value '{value}', found '{_currentToken.Value}'.");
+		if (value != null && !string.Equals(_tokenizer.ValueString.ToString(), value, StringComparison.OrdinalIgnoreCase))
+			throw new Exception($"Expected token value '{value}', found '{_tokenizer.ValueString.ToString()}'.");
 	}
 }

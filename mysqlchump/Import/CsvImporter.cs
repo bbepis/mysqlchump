@@ -21,7 +21,7 @@ internal class CsvImporter : BaseImporter
 
 	protected override async Task<(bool foundAnotherTable, string createTableSql, ulong? approxRows)> ReadToNextTable()
 	{
-		StreamReader = new StreamReader(DataStream, Encoding.UTF8);
+		StreamReader = new StreamReader(DataStream, Utility.NoBomUtf8);
 		CsvReader = await CsvDataReader.CreateAsync(ImportOptions.CsvFixInvalid ? new MysqlInvalidCsvReader(StreamReader) : StreamReader,
 			new CsvDataReaderOptions { BufferSize = 128000, HasHeaders = ImportOptions.CsvUseHeaderRow, ResultSetMode = ResultSetMode.MultiResult });
 

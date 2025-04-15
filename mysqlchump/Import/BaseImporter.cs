@@ -8,6 +8,8 @@ using MySqlConnector;
 using System.IO.Pipelines;
 using System.Collections.Generic;
 using System.IO;
+using mysqlchump.SqlParsing;
+using Index = mysqlchump.SqlParsing.Index;
 
 namespace mysqlchump.Import;
 
@@ -300,7 +302,7 @@ WHERE table_schema = '{connection.Database}'
 			try
 			{
 				using (var @lock = await transactionSemaphore.LockAsync())
-					await sendCommand("SET SESSION time_zone = \"+00:00\"; SET autocommit=0; SET UNIQUE_CHECKS=0; START TRANSACTION;");
+					await sendCommand("SET SESSION time_zone = \"+00:00\"; SET SESSION autocommit=0; SET SESSION UNIQUE_CHECKS=0; SET SESSION FOREIGN_KEY_CHECKS=0; START TRANSACTION;");
 
 				if (importOptions.ImportMechanism == ImportMechanism.SqlStatements)
 				{
@@ -458,7 +460,7 @@ WHERE table_schema = '{connection.Database}'
 			}));
 		}
 
-			await Task.WhenAll(workerTasks);
+		await Task.WhenAll(workerTasks);
 
 		if (printProgress)
 		{
