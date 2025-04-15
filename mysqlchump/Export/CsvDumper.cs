@@ -1,80 +1,92 @@
-﻿using System;
+using System;
 using System.Data.Common;
 using System.Data.SqlTypes;
-using System.Text;
+using System.IO.Pipelines;
+using System.Threading.Tasks;
 using MySqlConnector;
 
 namespace mysqlchump.Export
 {
-	public class CsvDumper : BaseTextDumper
+	public class CsvDumper : BaseDumper
 	{
-		public CsvDumper(MySqlConnection connection) : base(connection) { }
+		public override bool CanMultiplexTables => false;
 
-		public override bool CompatibleWithMultiTableStdout => false;
+		public CsvDumper(MySqlConnection connection, DumpOptions dumpOptions) : base(connection, dumpOptions) { }
 
-		private bool HasWrittenSchema = false;
-
-		protected override void CreateInsertLine(DbDataReader reader, StringBuilder builder)
+		protected override async Task PerformDump(string table, MySqlDataReader reader, PipeWriter writer, DbColumn[] schema, string createSql, ulong? estimatedRows)
 		{
-			if (!HasWrittenSchema)
+			var textWriter = new PipeTextWriter(writer);
+
+			bool needsNewline = false;
+
+			if (DumpOptions.CsvWriteHeader)
 			{
-				WriteSchemaLine(builder);
-				HasWrittenSchema = true;
-			}
+				bool rowStart = true;
 
-			bool rowStart = true;
-			foreach (var column in Columns)
-			{
-				if (!rowStart)
-					builder.Append(",");
-
-				object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal)) && reader is MySqlDataReader mysqlReader
-					? mysqlReader.GetMySqlDecimal(column.ColumnName)
-					: reader[column.ColumnName];
-
-				StringToCsvCell(GetCsvMySqlStringRepresentation(column, value), builder);
-
-				rowStart = false;
-			}
-
-			builder.AppendLine();
-		}
-		
-		private void WriteSchemaLine(StringBuilder builder)
-		{
-			bool rowStart = true;
-
-			foreach (var column in Columns)
-			{
-				if (!rowStart)
-					builder.Append(",");
-
-				StringToCsvCell(column.ColumnName, builder);
-
-				rowStart = false;
-			}
-
-			builder.AppendLine();
-		}
-		
-		// https://stackoverflow.com/a/6377656
-		private static void StringToCsvCell(string str, StringBuilder builder)
-		{
-			if (str.Contains(",") || str.Contains("\"") || str.Contains("\r") || str.Contains("\n"))
-			{
-				builder.Append("\"");
-				foreach (char nextChar in str)
+				foreach (var column in schema)
 				{
-					builder.Append(nextChar);
-					if (nextChar == '"')
-						builder.Append("\"");
+					if (!rowStart)
+						textWriter.Write(",");
+
+					StringToCsvCell(column.ColumnName, textWriter);
+
+					rowStart = false;
 				}
-				builder.Append("\"");
+
+				needsNewline = true;
 			}
-			else
+
+			while (await reader.ReadAsync())
 			{
-				builder.Append(str);
+				if (needsNewline)
+					textWriter.Write("\n");
+				needsNewline = true;
+
+				bool rowStart = true;
+				foreach (var column in schema)
+				{
+					if (!rowStart)
+						textWriter.Write(",");
+
+					object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal)) && reader is MySqlDataReader mysqlReader
+						? mysqlReader.GetMySqlDecimal(column.ColumnName)
+						: reader[column.ColumnName];
+
+					StringToCsvCell(GetCsvMySqlStringRepresentation(column, value), textWriter);
+
+					rowStart = false;
+				}
 			}
+
+			textWriter.Flush();
+		}
+
+		// https://stackoverflow.com/a/6377656
+		private static void StringToCsvCell(ReadOnlySpan<char> str, PipeTextWriter textWriter)
+		{
+			if (str.IndexOfAny(",\"\r\n") == -1)
+			{
+				textWriter.Write(str);
+				return;
+			}
+
+			textWriter.Write("\"");
+			int segmentStart = 0;
+			for (int i = 0; i < str.Length; i++)
+			{
+				if (str[i] == '"')
+				{
+					if (i > segmentStart)
+						textWriter.Write(str.Slice(segmentStart, i - segmentStart));
+
+					textWriter.Write("\"\"");
+					segmentStart = i + 1;
+				}
+			}
+
+			if (segmentStart < str.Length)
+				textWriter.Write(str.Slice(segmentStart));
+			textWriter.Write("\"");
 		}
 
 		private static string GetCsvMySqlStringRepresentation(DbColumn column, object value)

@@ -16,6 +16,8 @@ public class DumpOptions
 
 	public bool MysqlWriteCreateTable { get; set; }
 	public bool MysqlWriteTruncate { get; set; }
+
+	public bool CsvWriteHeader { get; set; }
 }
 
 public abstract class BaseDumper
