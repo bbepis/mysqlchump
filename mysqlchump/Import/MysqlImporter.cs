@@ -101,11 +101,15 @@ public class MysqlImporter : BaseImporter
 	protected StringBuilder queryBuilder = new StringBuilder();
 	protected override (int rows, bool canContinue, string sqlCommand) ReadDataSql(string tableName, ColumnInfo[] columns)
 	{
-		const int insertLimit = 2000;
+		const int insertLimit = 8000;
 		int count = 0;
 
 		queryBuilder.Clear();
-		queryBuilder.Append($"INSERT{(ImportOptions.InsertIgnore ? " IGNORE" : "")} INTO `{tableName}` ({string.Join(',', columns.Select(x => $"`{x.name}`"))}) VALUES ");
+
+		string[] currentColumnList = columns.Select(x => x.name).ToArray();
+		string[] testColumnList = new string[128];
+
+		queryBuilder.Append($"INSERT{(ImportOptions.InsertIgnore ? " IGNORE" : "")} INTO `{tableName}` (`{string.Join("`,`", currentColumnList)}`) VALUES ");
 
 		bool needsComma = false;
 		bool canContinue = true;
@@ -139,7 +143,27 @@ public class MysqlImporter : BaseImporter
 
 				if (token == SqlTokenType.LeftBrace)
 				{
-					throw new NotImplementedException("Need to handle custom column specification");
+					int testColumnCount = 0;
+					while (true)
+					{
+						token = SqlTokenizer.Read();
+						
+						if (token == SqlTokenType.RightBrace)
+							break;
+
+						if (token == SqlTokenType.Identifier)
+							testColumnList[testColumnCount++] = SqlTokenizer.ValueString.ToString();
+
+						token = SqlTokenizer.Read();
+
+						if (token == SqlTokenType.RightBrace)
+							break;
+					}
+
+					if (testColumnCount != currentColumnList.Length || !testColumnList.AsSpan(0, testColumnCount).SequenceEqual(currentColumnList))
+						throw new NotImplementedException("Need to handle custom column specification");
+
+					token = SqlTokenizer.Read();
 				}
 
 				AssertIdentifier("VALUES");
