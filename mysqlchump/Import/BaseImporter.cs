@@ -283,7 +283,7 @@ WHERE table_schema = '{connection.Database}'
 			}
 		}
 
-		workerTasks.AddRange(Enumerable.Range(0, importOptions.ParallelThreads).Select(async i =>
+		workerTasks.AddRange(Enumerable.Range(0, importOptions.ParallelThreads).Select(i => Task.Run(async () =>
 		{
 			await using var connection = createConnection();
 
@@ -363,7 +363,7 @@ WHERE table_schema = '{connection.Database}'
 
 				Console.Error.WriteLine(ex);
 			}
-		}).ToArray());
+		})).ToArray());
 
 
 		if (importOptions.ImportMechanism == ImportMechanism.SqlStatements)
@@ -411,6 +411,9 @@ WHERE table_schema = '{connection.Database}'
 							bool found = false;
 							for (int i = 0; i < pipeWriters.Length; i++)
 							{
+								if (pipeWriters[i] == null)
+									continue;
+
 								if (flushTasks[i] != null && flushTasks[i].IsFaulted)
 									Console.WriteLine(flushTasks[i].Exception);
 
@@ -447,7 +450,8 @@ WHERE table_schema = '{connection.Database}'
 					}
 
 					foreach (var writer in pipeWriters)
-						await writer.CompleteAsync();
+						if (writer != null)
+							await writer.CompleteAsync();
 				}
 				catch (Exception ex)
 				{
@@ -455,7 +459,8 @@ WHERE table_schema = '{connection.Database}'
 					Console.Error.WriteLine(ex.ToString());
 
 					foreach (var writer in pipeWriters)
-						await writer.CompleteAsync(ex);
+						if (writer != null)
+							await writer.CompleteAsync(ex);
 				}
 			}));
 		}

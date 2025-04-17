@@ -8,6 +8,7 @@ using System.IO.Pipelines;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using mysqlchump.Export;
 using mysqlchump.Import;
@@ -368,6 +369,8 @@ class Program
 		string table, string[] sourceTables, string[] csvColumns, bool csvFixInvalidMysql,
 		bool csvUseHeaders, ImportOptions options)
 	{
+		ThreadPool.SetMaxThreads(options.ParallelThreads * 2, options.ParallelThreads * 2);
+
 		bool stdin = inputLocation == "-";
 
 		Stream currentStream = stdin
