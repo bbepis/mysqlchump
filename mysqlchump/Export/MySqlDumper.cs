@@ -80,8 +80,7 @@ namespace mysqlchump.Export
 						if (i > 0)
 							textWriter.Write(", ");
 
-						object value = column.DataType == typeof(decimal)
-							&& !reader.IsDBNull(column.ColumnOrdinal!.Value)
+						object value = column.DataType == typeof(decimal) && !reader.IsDBNull(i)
 							? reader.GetMySqlDecimal(i)
 							: reader[i];
 

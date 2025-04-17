@@ -43,28 +43,30 @@ namespace mysqlchump.Export
 				needsNewline = true;
 
 				bool rowStart = true;
-				foreach (var column in schema)
+				for (int i = 0; i < schema.Length; i++)
 				{
+					DbColumn column = schema[i];
 					if (!rowStart)
 						textWriter.Write(",");
 
-					object value = (column.DataType == typeof(decimal) || column.DataType == typeof(MySqlDecimal)) && reader is MySqlDataReader mysqlReader
-						? mysqlReader.GetMySqlDecimal(column.ColumnName)
-						: reader[column.ColumnName];
+					object value = column.DataType == typeof(decimal) && !reader.IsDBNull(i)
+						? reader.GetMySqlDecimal(i)
+						: reader[i];
 
 					StringToCsvCell(GetCsvMySqlStringRepresentation(column, value), textWriter);
 
 					rowStart = false;
 				}
+
+				ExportedRows++;
 			}
 
 			textWriter.Flush();
 		}
 
-		// https://stackoverflow.com/a/6377656
 		private static void StringToCsvCell(ReadOnlySpan<char> str, PipeTextWriter textWriter)
 		{
-			if (str.IndexOfAny(",\"\r\n") == -1)
+			if (str.IndexOfAny(",\"\r\n\\") == -1)
 			{
 				textWriter.Write(str);
 				return;
@@ -74,14 +76,25 @@ namespace mysqlchump.Export
 			int segmentStart = 0;
 			for (int i = 0; i < str.Length; i++)
 			{
-				if (str[i] == '"')
-				{
-					if (i > segmentStart)
-						textWriter.Write(str.Slice(segmentStart, i - segmentStart));
+				string replacement = null;
 
-					textWriter.Write("\"\"");
-					segmentStart = i + 1;
+				switch (str[i])
+				{
+					case '"':
+						replacement = "\"\"";
+						break;
+					case '\\':
+						replacement = "\\\\";
+						break;
+					default:
+						continue;
 				}
+
+				if (i > segmentStart)
+					textWriter.Write(str.Slice(segmentStart, i - segmentStart));
+
+				textWriter.Write(replacement);
+				segmentStart = i + 1;
 			}
 
 			if (segmentStart < str.Length)
@@ -98,7 +111,7 @@ namespace mysqlchump.Export
 
 			if (columnType == typeof(string))
 			{
-				return value.ToString().Replace("\\", "\\\\");
+				return (string)value;
 			}
 
 			if (columnType == typeof(byte)
