@@ -5,6 +5,7 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using System.IO.Pipelines;
+using System.Globalization;
 
 namespace mysqlchump.Import;
 
@@ -175,7 +176,8 @@ public class JsonImporter : BaseImporter
 				}
 				else if (columns[columnNum].type.Contains("DATE", StringComparison.OrdinalIgnoreCase))
 				{
-					var date = DateTime.ParseExact(JsonTokenizer.ValueString.Span, "yyyy-MM-ddTH:mm:ss.fffZ", null);
+					var date = DateTime.ParseExact(JsonTokenizer.ValueString.Span, "yyyy-MM-ddTH:mm:ss.fffZ", CultureInfo.InvariantCulture,
+						DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
 
 					if (!date.TryFormat(conversionBuffer, out int writtenChars, "yyyy-MM-dd HH:mm:ss"))
 						throw new Exception($"Failed to convert date: {JsonTokenizer.ValueString.Span}");

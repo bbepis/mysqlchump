@@ -302,7 +302,7 @@ WHERE table_schema = '{connection.Database}'
 			try
 			{
 				using (var @lock = await transactionSemaphore.LockAsync())
-					await sendCommand("SET SESSION time_zone = \"+00:00\"; SET SESSION autocommit=0; SET SESSION UNIQUE_CHECKS=0; SET SESSION FOREIGN_KEY_CHECKS=0; START TRANSACTION;");
+					await sendCommand("SET SESSION time_zone = \'+00:00\'; SET SESSION autocommit=0; SET SESSION UNIQUE_CHECKS=0; SET SESSION FOREIGN_KEY_CHECKS=0; START TRANSACTION;");
 
 				if (importOptions.ImportMechanism == ImportMechanism.SqlStatements)
 				{
