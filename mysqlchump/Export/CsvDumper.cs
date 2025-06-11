@@ -138,6 +138,11 @@ namespace mysqlchump.Export
 				return dtValue.ToString("yyyy-MM-dd HH:mm:ss");
 			}
 
+			if (columnType == typeof(byte[]))
+			{
+				return Convert.ToBase64String((byte[])value);
+			}
+
 			throw new SqlTypeException($"Could not represent type: {column.DataTypeName} ({columnType?.FullName ?? "<NULL>"})");
 		}
 	}

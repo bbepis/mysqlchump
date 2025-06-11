@@ -6,6 +6,7 @@ using System.Text;
 using System.Threading.Tasks;
 using System.IO.Pipelines;
 using System.Globalization;
+using System.Buffers.Text;
 
 namespace mysqlchump.Import;
 
@@ -156,13 +157,14 @@ public class JsonImporter : BaseImporter
 
 				if (columnNum > 0)
 					queryBuilder.Append(',');
-
+				
+				var column = columns[columnNum];
+				
 				string writtenValue = null;
 
 				if (JsonTokenizer.TokenType == JsonTokenType.Null)
 					writtenValue = "NULL";
-				else if (columns[columnNum].type.Equals("BLOB", StringComparison.OrdinalIgnoreCase)
-					|| columns[columnNum].type.Contains("BINARY", StringComparison.OrdinalIgnoreCase))
+				else if (column.type == ColumnDataType.Binary)
 				{
 					if (b64Buffer.Length < JsonTokenizer.ValueString.Length)
 						b64Buffer = new byte[JsonTokenizer.ValueString.Length];
@@ -174,7 +176,7 @@ public class JsonImporter : BaseImporter
 
 					writtenValue = Utility.ByteArrayToString(b64Buffer.AsSpan(0, decodeLength));
 				}
-				else if (columns[columnNum].type.Contains("DATE", StringComparison.OrdinalIgnoreCase))
+				else if (column.type == ColumnDataType.Date)
 				{
 					var date = DateTime.ParseExact(JsonTokenizer.ValueString.Span, "yyyy-MM-ddTH:mm:ss.fffZ", CultureInfo.InvariantCulture,
 						DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal);
@@ -217,6 +219,8 @@ public class JsonImporter : BaseImporter
 		return (count, canContinue, queryBuilder.ToString());
 	}
 
+	private byte[] base64Buffer = new byte[512 * 1024];
+
 	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns)
 	{
 		bool canContinue = true;
@@ -246,6 +250,27 @@ public class JsonImporter : BaseImporter
 			}
 
 			currentPosition += Utility.NoBomUtf8.GetBytes(data, span.Slice(currentPosition));
+		}
+
+		byte[] HexAlphabetSpan = new[]
+		{
+			(byte)'0', (byte)'1', (byte)'2', (byte)'3',
+			(byte)'4', (byte)'5', (byte)'6', (byte)'7',
+			(byte)'8', (byte)'9', (byte)'A', (byte)'B',
+			(byte)'C', (byte)'D', (byte)'E', (byte)'F'
+		};
+
+		void WriteHex(ReadOnlySpan<byte> data, Span<byte> span)
+		{
+			for (var i = 0; i < data.Length; ++i)
+			{
+				int j = currentPosition + i * 2;
+
+				span[j] = HexAlphabetSpan[data[i] >> 4];
+				span[j + 1] = HexAlphabetSpan[data[i] & 0xF];
+
+				currentPosition += 2;
+			}
 		}
 
 		void SanitizeAndWrite(ReadOnlySpan<char> input, Span<byte> span)
@@ -350,7 +375,19 @@ public class JsonImporter : BaseImporter
 						break;
 					case JsonTokenType.String:
 						// if (columns[columnNum].type == "BLOB")
-						SanitizeAndWrite(JsonTokenizer.ValueString.Span, span);
+						//if (columns[columnNum].type == ColumnDataType.Binary)
+						//{
+						//	if (!Convert.TryFromBase64Chars(JsonTokenizer.ValueString.Span, base64Buffer, out int b64Bytes))
+						//		throw new Exception("Failed to parse base64 string");
+
+						//	WriteString("_binary 0x", span);
+						//	WriteHex(base64Buffer.AsSpan(0, b64Bytes), span);
+						//}
+						//else
+						//{
+							SanitizeAndWrite(JsonTokenizer.ValueString.Span, span);
+						//}
+
 						break;
 					case JsonTokenType.Boolean:
 						WriteString(JsonTokenizer.ValueBoolean ? "1" : "0", span);
@@ -367,14 +404,7 @@ public class JsonImporter : BaseImporter
 						WriteString(JsonTokenizer.ValueDouble.ToString(), span);
 						break;
 					default:
-						if (columns[columnNum].type == "BLOB")
-						{
-							//WriteString(Utility.ByteArrayToString(Convert.FromBase64String((string)value)), span);
-							WriteString(JsonTokenizer.ValueString.Span, span);
-							break;
-						}
-						else
-							throw new InvalidDataException($"Unknown token type: {JsonTokenizer.TokenType}");
+						throw new InvalidDataException($"Unknown token type: {JsonTokenizer.TokenType}");
 				}
 			}
 

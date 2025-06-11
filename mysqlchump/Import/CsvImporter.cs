@@ -69,7 +69,7 @@ internal class CsvImporter : BaseImporter
 			}
 		}
 
-		return (true, ImportOptions.TargetTable, columns.Select((x, i) => new ColumnInfo(x, sqlColumnTypes[i])).ToArray());
+		return (true, ImportOptions.TargetTable, columns.Select((x, i) => new ColumnInfo(x, ColumnDataType.Default, sqlColumnTypes[i])).ToArray());
 	}
 
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);

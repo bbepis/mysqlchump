@@ -50,7 +50,15 @@ public abstract class BaseImporter : IDisposable
 		DataStream = dataStream;
 	}
 	protected record QueuedIndex(string text, string tableName, string indexName, bool isFk, string sql);
-	protected record ColumnInfo(string name, string type);
+
+	protected enum ColumnDataType
+	{
+		Default,
+		Binary,
+		Date
+	}
+
+	protected record ColumnInfo(string name, ColumnDataType type, string rawType);
 
 	protected Channel<QueuedIndex> ReindexQueue { get; } = Channel.CreateUnbounded<QueuedIndex>();
 	protected List<QueuedIndex> PendingIndexes { get; } = new();
@@ -142,7 +150,22 @@ WHERE table_schema = '{connection.Database}'
 	{
 		var parsedTable = CreateTableParser.Parse(createTableSql);
 
-		var columnInfo = parsedTable.Columns.Select(x => new ColumnInfo(x.Name, x.DataType)).ToArray();
+		var columnInfo = parsedTable.Columns.Select(x =>
+			{
+				var type = ColumnDataType.Default;
+
+				if (x.DataType.Contains("BINARY", StringComparison.OrdinalIgnoreCase)
+					|| x.DataType.Contains("BLOB", StringComparison.OrdinalIgnoreCase))
+				{
+					type = ColumnDataType.Binary;
+				}
+				else if (x.DataType.Contains("DATE", StringComparison.OrdinalIgnoreCase))
+				{
+					type = ColumnDataType.Date;
+				}
+
+				return new ColumnInfo(x.Name, type, x.DataType);
+			}).ToArray();
 
 		if (ImportOptions.SourceTables != null
 			&& ImportOptions.SourceTables.Length > 0
@@ -277,7 +300,7 @@ WHERE table_schema = '{connection.Database}'
 
 		foreach (var column in columns)
 		{
-			if (column.type == "BLOB" || column.type.Contains("BIT"))
+			if (column.type == ColumnDataType.Binary)
 			{
 				blobColumnDictionary[column.name] = $"@var{blobColumnDictionary.Count + 1}";
 			}
@@ -337,11 +360,12 @@ WHERE table_schema = '{connection.Database}'
 					loader.Columns.AddRange(columns.Select(x => blobColumnDictionary.GetValueOrDefault(x.name, $"`{x.name}`")));
 					loader.Expressions.AddRange(blobColumnDictionary.Select(x =>
 					{
-						var type = columns.First(y => y.name == x.Key).type;
+						var column = columns.First(y => y.name == x.Key);
+						var rawType = column.rawType.ToUpper();
 
-						if (type == "BLOB")
+						if (column.type == ColumnDataType.Binary)
 							return $"`{x.Key}`=FROM_BASE64({x.Value})";
-						if (type.Contains("BIT"))
+						if (rawType.Contains("BIT"))
 							return $"`{x.Key}`=CAST({x.Value} as signed)";
 
 						throw new Exception("Unexpected CSV type conversion");

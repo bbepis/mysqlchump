@@ -160,9 +160,7 @@ public class JsonDumper : BaseDumper
 			if (!Convert.TryToBase64Chars(data, chars, out int charsWritten))
 				throw new Exception("Could not convert data to base 64");
 
-			JsonWriter.Write("\"");
-			JsonWriter.Write(chars);
-			JsonWriter.Write("\"");
+			WriteJsonString(chars.Slice(0, charsWritten));
 			return;
 		}
 
