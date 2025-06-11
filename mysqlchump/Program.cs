@@ -12,7 +12,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using mysqlchump.Export;
 using mysqlchump.Import;
-using mysqlchump.SqlParsing;
 using MySqlConnector;
 
 namespace mysqlchump;
