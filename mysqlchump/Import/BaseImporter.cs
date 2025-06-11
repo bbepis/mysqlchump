@@ -110,7 +110,15 @@ WHERE table_schema = '{connection.Database}'
 							Console.Error.WriteLine(text);
 							command.CommandText = sql;
 
-							await command.ExecuteNonQueryAsync();
+							try
+							{
+								await command.ExecuteNonQueryAsync();
+							}
+							catch (Exception ex)
+							{
+								Console.Error.WriteLine($"Failed to create {(isFk ? "foreign key" : "index")} {tableName}.{indexName}");
+								Console.Error.WriteLine(ex);
+							}
 						}
 					}
 
@@ -136,6 +144,11 @@ WHERE table_schema = '{connection.Database}'
 			}
 
 			await PerformParallelImport(ImportOptions, approxRows, tableName, columns, createConnection);
+
+			foreach (var index in PendingIndexes)
+				await ReindexQueue.Writer.WriteAsync(index);
+
+			PendingIndexes.Clear();
 		}
 
 		ReindexQueue.Writer.Complete();
@@ -232,26 +245,29 @@ WHERE table_schema = '{connection.Database}'
 			{
 				command.CommandText = createTableSql;
 				await command.ExecuteNonQueryAsync();
+			}
+		}
 
-				foreach (var index in removedIndexes)
-				{
-					PendingIndexes.Add(new(
-						$"Creating index {parsedTable.Name}.{index.Name}...",
-						parsedTable.Name,
-						index.Name,
-						false,
-						$"ALTER TABLE `{parsedTable.Name}` ADD {index.ToSql()};"));
-				}
+		if (ImportOptions.DeferIndexes)
+		{
+			foreach (var index in removedIndexes)
+			{
+				PendingIndexes.Add(new(
+					$"Creating index {parsedTable.Name}.{index.Name}...",
+					parsedTable.Name,
+					index.Name,
+					false,
+					$"ALTER TABLE `{parsedTable.Name}` ADD {index.ToSql()};"));
+			}
 
-				foreach (var fk in removedFks)
-				{
-					PendingIndexes.Add(new(
-						$"Creating foreign key {parsedTable.Name}.{fk.Name}...",
-						parsedTable.Name,
-						fk.Name,
-						true,
-						$"ALTER TABLE `{parsedTable.Name}` ADD {fk.ToSql()};"));
-				}
+			foreach (var fk in removedFks)
+			{
+				PendingIndexes.Add(new(
+					$"Creating foreign key {parsedTable.Name}.{fk.Name}...",
+					parsedTable.Name,
+					fk.Name,
+					true,
+					$"ALTER TABLE `{parsedTable.Name}` ADD {fk.ToSql()};"));
 			}
 		}
 
