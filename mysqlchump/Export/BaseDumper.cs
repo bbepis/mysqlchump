@@ -49,6 +49,7 @@ public abstract class BaseDumper
 		selectCommand.CommandText = formattedQuery;
 
 		selectCommand.CommandTimeout = 3600;
+		await selectCommand.PrepareAsync();
 
 		using var reader = await selectCommand.ExecuteReaderAsync();
 		var columns = reader.GetColumnSchema().AsEnumerable().ToArray();

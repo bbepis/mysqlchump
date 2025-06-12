@@ -73,12 +73,22 @@ public class JsonDumper : BaseDumper
 
 				object value;
 
-				if (column.DataType == typeof(decimal) && !reader.IsDBNull(i))
-					value = reader.GetMySqlDecimal(i);
+				if (reader.IsDBNull(i))
+				{
+					JsonWriter.Write("null");
+				}
+				else if (column.DataType == typeof(string))
+				{
+					WriteJsonString((string)reader.GetValue(i));
+				}
 				else
-					value = reader[i];
+				{
+					value = column.DataType == typeof(decimal)
+						? reader.GetMySqlDecimal(i)
+						: reader[i];
 
-				WriteJsonMySqlValue(column, value);
+					WriteJsonMySqlValue(column, value);
+				}
 			}
 
 			JsonWriter.Write("]");
@@ -99,12 +109,6 @@ public class JsonDumper : BaseDumper
 
 	private void WriteJsonMySqlValue(DbColumn column, object value)
 	{
-		if (value == null || value == DBNull.Value)
-		{
-			JsonWriter.Write("null");
-			return;
-		}
-
 		var columnType = column.DataType;
 
 		if (columnType == typeof(byte)
@@ -139,12 +143,6 @@ public class JsonDumper : BaseDumper
 		if (columnType == typeof(bool))
 		{
 			JsonWriter.Write((bool)value ? "true" : "false");
-			return;
-		}
-
-		if (columnType == typeof(string))
-		{
-			WriteJsonString((string)value);
 			return;
 		}
 
