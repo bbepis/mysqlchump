@@ -7,7 +7,7 @@ namespace mysqlchump.Tests;
 
 public class SqlTests
 {
-	[Test]
+	[Test, Explicit]
 	public void PerformanceTest()
 	{
 		using var fs = new FileStream(@"C:\Temp\mysqldump-test.sql", FileMode.Open);

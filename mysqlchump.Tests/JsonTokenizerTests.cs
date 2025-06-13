@@ -6,7 +6,7 @@ namespace mysqlchump.Tests;
 
 class JsonTokenizerTests
 {
-	[Test]
+	[Test, Explicit]
 	public void DoJsonTest()
 	{
 		using var fileStream = new FileStream(@"C:\Temp\archived.moe-foolfuuka-20250331.full.json", FileMode.Open);
@@ -30,7 +30,7 @@ class JsonTokenizerTests
 		Console.WriteLine(stopwatch.ToString());
 	}
 
-	[Test]
+	[Test, Explicit]
 	public void DoSmallJsonTest()
 	{
 		using var jsonStream = new MemoryStream(Utility.NoBomUtf8.GetBytes("{\"propName\": [1,2,3]}"));
