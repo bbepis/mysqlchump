@@ -10,7 +10,7 @@ public class PipeTextWriter
 
 	private char[] Buffer;
 	private int CurrentWritten = 0;
-	private Task flushTask = null;
+	private Task<FlushResult> flushTask = null;
 
 	public PipeTextWriter(PipeWriter writer, int bufferSize = 512 * 1024)
 	{
@@ -36,7 +36,7 @@ public class PipeTextWriter
 
 			Writer.Advance(bytesWritten);
 
-			flushTask = Task.Run(() => Writer.FlushAsync());
+			flushTask = Task.Run(async () => await Writer.FlushAsync());
 			return;
 		}
 
@@ -63,13 +63,11 @@ public class PipeTextWriter
 	{
 		for (var i = 0; i < data.Length; ++i)
 		{
-			if (Buffer.Length - CurrentWritten < 2)
+			if (Buffer.Length - (CurrentWritten + 2) < 2)
 				Flush();
 
-			int j = CurrentWritten + i * 2;
-
-			Buffer[j] = (char)HexAlphabetSpan[data[i] >> 4];
-			Buffer[j + 1] = (char)HexAlphabetSpan[data[i] & 0xF];
+			Buffer[CurrentWritten] = (char)HexAlphabetSpan[data[i] >> 4];
+			Buffer[CurrentWritten + 1] = (char)HexAlphabetSpan[data[i] & 0xF];
 
 			CurrentWritten += 2;
 		}
@@ -89,9 +87,9 @@ public class PipeTextWriter
 		Writer.Advance(bytesWritten);
 
 		if (softFlush)
-			flushTask = Task.Run(() => Writer.FlushAsync());
+			flushTask = Task.Run(async () => await Writer.FlushAsync());
 		else
-			Writer.FlushAsync().AsTask().Wait();
+			_ = Writer.FlushAsync().AsTask().Result;
 		
 		CurrentWritten = 0;
 	}

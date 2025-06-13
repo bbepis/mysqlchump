@@ -23,9 +23,11 @@ public class ImportOptions
 {
 	public ImportMechanism ImportMechanism { get; set; }
 
+	public int ParallelThreads { get; set; }
+	public int InsertBatchSize { get; set; } = 4000;
+
 	public bool AggressiveUnsafe { get; set; }
 	public string[] SourceTables { get; set; }
-	public int ParallelThreads { get; set; }
 	public bool InsertIgnore { get; set; }
 	public bool SetInnoDB { get; set; }
 	public bool SetCompressed { get; set; }
@@ -180,12 +182,25 @@ WHERE table_schema = '{connection.Database}'
 				return new ColumnInfo(x.Name, type, x.DataType);
 			}).ToArray();
 
-		if (ImportOptions.SourceTables != null
-			&& ImportOptions.SourceTables.Length > 0
-			&& !ImportOptions.SourceTables.Any(x => x == "*")
-			&& !ImportOptions.SourceTables.Any(x => parsedTable.Name.Equals(x, StringComparison.OrdinalIgnoreCase)))
+		var allTablesSelected = ImportOptions.SourceTables == null
+            || ImportOptions.SourceTables.Length == 0
+            || ImportOptions.SourceTables.Any(x => x == "*");
+
+		if (!allTablesSelected && !ImportOptions.SourceTables.Any(x => parsedTable.Name.Equals(x, StringComparison.OrdinalIgnoreCase)))
 		{
 			return (false, parsedTable.Name, columnInfo);
+		}
+
+		if (!string.IsNullOrWhiteSpace(ImportOptions.TargetTable))
+		{
+			if ((allTablesSelected || ImportOptions.SourceTables.Length > 1) && !(this is CsvImporter))
+			{
+				Console.Error.WriteLine($"A single, non-wildcard table must be specified when using -t / --table to change the destination table. Exiting");
+				Utility.TryExitProcess(1);
+			}
+
+			parsedTable.Name = ImportOptions.TargetTable;
+			createTableSql = parsedTable.ToCreateTableSql();
 		}
 
 		if (ImportOptions.SetInnoDB)
@@ -322,6 +337,9 @@ WHERE table_schema = '{connection.Database}'
 			}
 		}
 
+		var readerCts = new CancellationTokenSource();
+		int failedCount = 0;
+
 		workerTasks.AddRange(Enumerable.Range(0, importOptions.ParallelThreads).Select(i => Task.Run(async () =>
 		{
 			await using var connection = createConnection();
@@ -402,6 +420,13 @@ WHERE table_schema = '{connection.Database}'
 					Console.Error.WriteLine(commandText);
 
 				Console.Error.WriteLine(ex);
+
+				if (Interlocked.Increment(ref failedCount) == importOptions.ParallelThreads)
+				{
+					await readerCts.CancelAsync();
+				}
+
+				throw;
 			}
 		})).ToArray());
 
@@ -419,7 +444,7 @@ WHERE table_schema = '{connection.Database}'
 					if (sqlQuery == null)
 						break;
 
-					await sqlCommandChannel.Writer.WriteAsync(sqlQuery);
+					await sqlCommandChannel.Writer.WriteAsync(sqlQuery, readerCts.Token);
 
 					if (!canContinue)
 						break;
@@ -427,8 +452,13 @@ WHERE table_schema = '{connection.Database}'
 			}
 			catch (Exception ex)
 			{
-				Console.Error.WriteLine($"Error when reading data source");
-				Console.Error.WriteLine(ex.ToString());
+				if (!(ex is TaskCanceledException))
+				{
+					Console.Error.WriteLine($"Error when reading data source");
+					Console.Error.WriteLine(ex.ToString());
+
+					throw;
+				}
 			}
 
 			sqlCommandChannel.Writer.Complete();
@@ -481,7 +511,7 @@ WHERE table_schema = '{connection.Database}'
 							break;
 
 						//await writer.FlushAsync();
-						flushTasks[writerIndex] = Task.Run(async () => await writer.FlushAsync());
+						flushTasks[writerIndex] = Task.Run(async () => await writer.FlushAsync(readerCts.Token));
 
 						processedRowCount += rowCount;
 
@@ -495,12 +525,17 @@ WHERE table_schema = '{connection.Database}'
 				}
 				catch (Exception ex)
 				{
-					Console.Error.WriteLine($"Error when reading data source");
-					Console.Error.WriteLine(ex.ToString());
+					if (!(ex is TaskCanceledException))
+					{
+						Console.Error.WriteLine($"Error when reading data source");
+						Console.Error.WriteLine(ex.ToString());
 
-					foreach (var writer in pipeWriters)
-						if (writer != null)
-							await writer.CompleteAsync(ex);
+						foreach (var writer in pipeWriters)
+							if (writer != null)
+								await writer.CompleteAsync(ex);
+
+						throw;
+					}
 				}
 			}));
 		}

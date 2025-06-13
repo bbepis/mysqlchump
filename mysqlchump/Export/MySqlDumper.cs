@@ -8,9 +8,9 @@ using MySqlConnector;
 
 namespace mysqlchump.Export
 {
-	public class MySqlDumper : BaseDumper
+	public class MysqlDumper : BaseDumper
 	{
-		public MySqlDumper(MySqlConnection connection, DumpOptions dumpOptions) : base(connection, dumpOptions) { }
+		public MysqlDumper(MySqlConnection connection, DumpOptions dumpOptions) : base(connection, dumpOptions) { }
 
 		public override bool CanMultiplexTables => true;
 
@@ -80,11 +80,18 @@ namespace mysqlchump.Export
 						if (i > 0)
 							textWriter.Write(", ");
 
-						object value = column.DataType == typeof(decimal) && !reader.IsDBNull(i)
-							? reader.GetMySqlDecimal(i)
-							: reader[i];
+						if (reader.IsDBNull(i))
+						{
+							textWriter.Write("NULL");
+						}
+						else
+						{
+							object value = column.DataType == typeof(decimal)
+								? reader.GetMySqlDecimal(i)
+								: reader[i];
 
-						WriteMySqlStringRepresentation(column, value, textWriter);
+							WriteMySqlStringRepresentation(column, value, textWriter);
+						}
 					}
 
 					textWriter.Write(")");
@@ -111,14 +118,11 @@ namespace mysqlchump.Export
 
 		protected static void WriteMySqlStringRepresentation(DbColumn column, object value, PipeTextWriter textWriter)
 		{
-			if (value == null || value == DBNull.Value)
-			{
-				textWriter.Write("NULL");
-				return;
-			}
-
 			switch (value)
 			{
+				case string str:
+					WriteMysqlString(str, textWriter);
+					return;
 				case byte:
 				case sbyte:
 				case ushort:
@@ -131,28 +135,23 @@ namespace mysqlchump.Export
 				case double:
 					textWriter.Write(value.ToString());
 					return;
-				case bool:
-					textWriter.Write((bool)value ? "1" : "0");
+				case bool b:
+					textWriter.Write(b ? "1" : "0");
 					return;
-				case string:
-					WriteMysqlString((string)value, textWriter);
-					return;
-				case byte[]:
+				case byte[] bytes:
 					textWriter.Write("_binary 0x");
-					textWriter.WriteHex((byte[])value);
+					textWriter.WriteHex(bytes);
 					return;
-				case MySqlDecimal:
-					textWriter.Write(((MySqlDecimal)value).ToString());
+				case MySqlDecimal mySqlDecimal:
+					textWriter.Write(mySqlDecimal.ToString());
 					return;
-				case DateTime:
-					var dtValue = (DateTime)value;
-
+				case DateTime dtValue:
 					Span<char> charOutput = stackalloc char[24];
 
 					if (!dtValue.TryFormat(charOutput, out int written, "yyyy-MM-dd HH:mm:ss"))
 						throw new Exception("Failed to format date string");
 
-					textWriter.Write(charOutput.Slice(0, written));
+					WriteMysqlString(charOutput.Slice(0, written), textWriter);
 					return;
 			}
 

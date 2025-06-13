@@ -6,7 +6,6 @@ using System.Text;
 using System.Threading.Tasks;
 using System.IO.Pipelines;
 using System.Globalization;
-using System.Buffers.Text;
 
 namespace mysqlchump.Import;
 
@@ -127,7 +126,6 @@ public class JsonImporter : BaseImporter
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);
 	protected override (int rows, bool canContinue, string sqlCommand) ReadDataSql(string tableName, ColumnInfo[] columns)
 	{
-		const int insertLimit = 2000;
 		int count = 0;
 
 		queryBuilder.Clear();
@@ -139,7 +137,7 @@ public class JsonImporter : BaseImporter
 		byte[] b64Buffer = new byte[64];
 		char[] conversionBuffer = new char[64];
 
-		for (; count < insertLimit; count++)
+		for (; count < ImportOptions.InsertBatchSize; count++)
 		{
 			if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType != JsonTokenType.StartArray)
 			{
@@ -166,15 +164,22 @@ public class JsonImporter : BaseImporter
 					writtenValue = "NULL";
 				else if (column.type == ColumnDataType.Binary)
 				{
-					if (b64Buffer.Length < JsonTokenizer.ValueString.Length)
-						b64Buffer = new byte[JsonTokenizer.ValueString.Length];
+					if (JsonTokenizer.ValueString.Length == 0)
+					{
+						writtenValue = "''";
+					}
+					else
+					{
+						if (b64Buffer.Length < JsonTokenizer.ValueString.Length)
+							b64Buffer = new byte[JsonTokenizer.ValueString.Length];
 
-					if (!Convert.TryFromBase64Chars(JsonTokenizer.ValueString.Span, b64Buffer, out var decodeLength))
-						throw new Exception($"Failed to decode base64 string: {JsonTokenizer.ValueString.Span}");
+						if (!Convert.TryFromBase64Chars(JsonTokenizer.ValueString.Span, b64Buffer, out var decodeLength))
+							throw new Exception($"Failed to decode base64 string: {JsonTokenizer.ValueString.Span}");
 
-					queryBuilder.Append("_binary 0x");
+						queryBuilder.Append("_binary 0x");
 
-					writtenValue = Utility.ByteArrayToString(b64Buffer.AsSpan(0, decodeLength));
+						writtenValue = Utility.ByteArrayToString(b64Buffer.AsSpan(0, decodeLength));
+					}
 				}
 				else if (column.type == ColumnDataType.Date)
 				{
@@ -189,7 +194,14 @@ public class JsonImporter : BaseImporter
 					queryBuilder.Append("'");
 				}
 				else if (JsonTokenizer.TokenType == JsonTokenType.String)
-					writtenValue = $"'{JsonTokenizer.ValueString.ToString().Replace("\\", "\\\\").Replace("'", "''")}'";
+				{
+					queryBuilder.Append('\'');
+					if (!JsonTokenizer.ValueString.Span.ContainsAny("\'\\"))
+						queryBuilder.Append(JsonTokenizer.ValueString);
+					else
+						queryBuilder.Append(JsonTokenizer.ValueString.ToString().Replace("\\", "\\\\").Replace("'", "''"));
+					queryBuilder.Append('\'');
+				}
 				else if (JsonTokenizer.TokenType == JsonTokenType.Boolean)
 					writtenValue = JsonTokenizer.ValueBoolean ? "TRUE" : "FALSE";
 				//else if (jsonReader.TokenType == JsonTokenType.Date)
@@ -219,10 +231,12 @@ public class JsonImporter : BaseImporter
 		return (count, canContinue, queryBuilder.ToString());
 	}
 
-	private byte[] base64Buffer = new byte[512 * 1024];
+	//private byte[] base64Buffer = new byte[512 * 1024];
 
 	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns)
 	{
+		Span<char> intFormatBuffer = stackalloc char[64];
+
 		bool canContinue = true;
 
 		const int minimumSpanSize = 4 * 1024 * 1024;
@@ -374,34 +388,27 @@ public class JsonImporter : BaseImporter
 						WriteString("\\N", span);
 						break;
 					case JsonTokenType.String:
-						// if (columns[columnNum].type == "BLOB")
-						//if (columns[columnNum].type == ColumnDataType.Binary)
-						//{
-						//	if (!Convert.TryFromBase64Chars(JsonTokenizer.ValueString.Span, base64Buffer, out int b64Bytes))
-						//		throw new Exception("Failed to parse base64 string");
-
-						//	WriteString("_binary 0x", span);
-						//	WriteHex(base64Buffer.AsSpan(0, b64Bytes), span);
-						//}
-						//else
-						//{
-							SanitizeAndWrite(JsonTokenizer.ValueString.Span, span);
-						//}
-
+						// Dates, strings and binary blobs are processed through here
+						// - Strings get handled as strings
+						// - Binary blobs are read from JSON as Base64, and inserted via LOAD DATA as Base64
+						// - Dates are handled as strings by MySQL
+						// Therefore just pass as-is
+						SanitizeAndWrite(JsonTokenizer.ValueString.Span, span);
 						break;
 					case JsonTokenType.Boolean:
 						WriteString(JsonTokenizer.ValueBoolean ? "1" : "0", span);
 						break;
-					//case JsonToken.Date:
-					//	WriteString(((DateTime)value).ToString("yyyy-MM-dd HH:mm:ss"), span);
-					//	break;
 					case JsonTokenType.NumberLong:
-						// TODO: int.TryFormat
-						WriteString(JsonTokenizer.ValueLong.ToString(), span);
+						if (!JsonTokenizer.ValueLong.TryFormat(intFormatBuffer, out int written))
+							throw new Exception("Integer format buffer too small");
+
+						WriteString(intFormatBuffer.Slice(0, written), span);
 						break;
 					case JsonTokenType.NumberDouble:
-						// TODO: double.TryFormat
-						WriteString(JsonTokenizer.ValueDouble.ToString(), span);
+						if (!JsonTokenizer.ValueDouble.TryFormat(intFormatBuffer, out int dWritten))
+							throw new Exception("Integer format buffer too small");
+
+						WriteString(intFormatBuffer.Slice(0, dWritten), span);
 						break;
 					default:
 						throw new InvalidDataException($"Unknown token type: {JsonTokenizer.TokenType}");

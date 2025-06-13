@@ -10,6 +10,15 @@ namespace mysqlchump
 	public static class Utility
 	{
 		public static UTF8Encoding NoBomUtf8 { get; } = new UTF8Encoding(false);
+		public static bool IsTesting { get; set; } = false;
+
+		public static void TryExitProcess(int code)
+		{
+			if (IsTesting)
+				throw new Exception($"Process exited: {code}");
+
+			Environment.Exit(code);
+		}
 
 		public static bool TryFirst<T>(this IEnumerable<T> enumerable, Func<T, bool> predicate, out T value)
 		{

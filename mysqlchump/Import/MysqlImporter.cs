@@ -101,13 +101,16 @@ public class MysqlImporter : BaseImporter
 	protected StringBuilder queryBuilder = new StringBuilder();
 	protected override (int rows, bool canContinue, string sqlCommand) ReadDataSql(string tableName, ColumnInfo[] columns)
 	{
-		const int insertLimit = 8000;
 		int count = 0;
 
 		queryBuilder.Clear();
 
 		string[] currentColumnList = columns.Select(x => x.name).ToArray();
 		string[] testColumnList = new string[128];
+
+		var expectedTableName = !string.IsNullOrWhiteSpace(ImportOptions.TargetTable)
+			? ImportOptions.SourceTables[0]
+			: tableName;
 
 		queryBuilder.Append($"INSERT{(ImportOptions.InsertIgnore ? " IGNORE" : "")} INTO `{tableName}` (`{string.Join("`,`", currentColumnList)}`) VALUES ");
 
@@ -136,8 +139,8 @@ public class MysqlImporter : BaseImporter
 				AssertIdentifier("INTO");
 
 				token = SqlTokenizer.Read();
-				if (!SqlTokenizer.ValueString.Span.Equals(tableName, StringComparison.Ordinal))
-					throw new Exception($"Table name incorrect, was expecting `{tableName}` but got `{SqlTokenizer.ValueString}`");
+				if (!SqlTokenizer.ValueString.Span.Equals(expectedTableName, StringComparison.Ordinal))
+					throw new Exception($"Table name incorrect, was expecting `{expectedTableName}` but got `{SqlTokenizer.ValueString}`");
 
 				token = SqlTokenizer.Read();
 
@@ -205,7 +208,16 @@ public class MysqlImporter : BaseImporter
 							queryBuilder.Append("NULL");
 							break;
 						case SqlTokenType.BinaryBlob:
-							throw new NotImplementedException("Binaryblob");
+							if (SqlTokenizer.ValueBinaryHex.Length > 0)
+							{
+								queryBuilder.Append("_binary 0x");
+								queryBuilder.Append(SqlTokenizer.ValueBinaryHex);
+							}
+							else
+							{
+								queryBuilder.Append("''");
+							}
+							break;
 						case SqlTokenType.Identifier:
 							throw new Exception($"Unexpected identifier '{SqlTokenizer.ValueString}'");
 						case SqlTokenType.EOF:
@@ -231,7 +243,7 @@ public class MysqlImporter : BaseImporter
 				}
 			}
 
-			if (count >= insertLimit)
+			if (count >= ImportOptions.InsertBatchSize)
 			{
 				break;
 			}

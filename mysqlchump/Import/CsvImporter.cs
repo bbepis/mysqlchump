@@ -1,5 +1,3 @@
-using MySqlConnector;
-using Sylvan.Data.Csv;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -7,10 +5,12 @@ using System.IO.Pipelines;
 using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
+using MySqlConnector;
+using Sylvan.Data.Csv;
 
 namespace mysqlchump.Import;
 
-internal class CsvImporter : BaseImporter
+public class CsvImporter : BaseImporter
 {
 	protected StreamReader StreamReader { get; set; }
 	protected CsvDataReader CsvReader { get; set; }
@@ -19,11 +19,17 @@ internal class CsvImporter : BaseImporter
 
 	public CsvImporter(ImportOptions options, Stream dataStream) : base(options, dataStream) { }
 
+	protected bool HasReadFile = false;
 	protected override async Task<(bool foundAnotherTable, string createTableSql, ulong? approxRows)> ReadToNextTable()
 	{
+		if (HasReadFile)
+			return (false, null, null);
+
 		StreamReader = new StreamReader(DataStream, Utility.NoBomUtf8);
 		CsvReader = await CsvDataReader.CreateAsync(ImportOptions.CsvFixInvalid ? new MysqlInvalidCsvReader(StreamReader) : StreamReader,
-			new CsvDataReaderOptions { BufferSize = 128000, HasHeaders = ImportOptions.CsvUseHeaderRow, ResultSetMode = ResultSetMode.MultiResult });
+			new CsvDataReaderOptions { BufferSize = 128000, HasHeaders = ImportOptions.CsvUseHeaderRow, ResultSetMode = ResultSetMode.SingleResult, Delimiter = ',' });
+
+		HasReadFile = true;
 
 		return (true, null, null);
 	}
@@ -42,10 +48,13 @@ internal class CsvImporter : BaseImporter
 		else
 		{
 			columns = ImportOptions.CsvManualColumns;
+
+			if (columns.Length != CsvReader.FieldCount)
+				throw new Exception($"Incorrect amount of columns specified; CSV file has {CsvReader.FieldCount} columns but {columns.Length} was specified");
 		}
 
 		ColumnTypes = new Type[columns.Length];
-		var sqlColumnTypes = new string[columns.Length];
+		var columnInfo = new ColumnInfo[columns.Length];
 
 		await using (var connection = createConnection())
 		{
@@ -65,18 +74,31 @@ internal class CsvImporter : BaseImporter
 					throw new Exception($"Seemingly invalid column list; cannot find column '{columnName}'.{(ImportOptions.CsvUseHeaderRow ? "" : " Maybe try specifying column list manually?")}");
 
 				ColumnTypes[i] = dbColumn.DataType;
-				sqlColumnTypes[i] = dbColumn.DataTypeName;
+
+				var type = ColumnDataType.Default;
+
+				if (dbColumn.DataTypeName.Contains("BINARY", StringComparison.OrdinalIgnoreCase)
+				    || dbColumn.DataTypeName.Contains("BLOB", StringComparison.OrdinalIgnoreCase))
+				{
+					type = ColumnDataType.Binary;
+				}
+				else if (dbColumn.DataTypeName.Contains("DATE", StringComparison.OrdinalIgnoreCase))
+				{
+					type = ColumnDataType.Date;
+				}
+
+				columnInfo[i] = new ColumnInfo(columnName, type, dbColumn.DataTypeName);
 			}
 		}
 
-		return (true, ImportOptions.TargetTable, columns.Select((x, i) => new ColumnInfo(x, ColumnDataType.Default, sqlColumnTypes[i])).ToArray());
+		return (true, ImportOptions.TargetTable, columnInfo);
 	}
 
 	private StringBuilder queryBuilder = new StringBuilder(1_000_000);
 
+	private byte[] b64Buffer = new byte[64];
 	protected override (int rows, bool canContinue, string sqlCommand) ReadDataSql(string tableName, ColumnInfo[] columns)
 	{
-		const int insertLimit = 4000;
 		int count = 0;
 
 		queryBuilder.Clear();
@@ -85,7 +107,7 @@ internal class CsvImporter : BaseImporter
 		bool needsComma = false;
 		bool canReadMore = true;
 
-		for (; count < insertLimit; count++)
+		for (; count < ImportOptions.InsertBatchSize; count++)
 		{
 			if (!CsvReader.Read())
 			{
@@ -101,21 +123,43 @@ internal class CsvImporter : BaseImporter
 				if (i > 0)
 					queryBuilder.Append(",");
 
-				var rawValue = CsvReader.GetString(i);
+				var cellValue = CsvReader.GetFieldSpan(i);
 
-				if (MemoryExtensions.Equals(rawValue, "\\N", StringComparison.Ordinal))
+				if (cellValue.Equals("\\N", StringComparison.Ordinal))
 				{
 					queryBuilder.Append("NULL");
+				}
+				else if (columns[i].type == ColumnDataType.Binary)
+				{
+					if (cellValue.Length == 0)
+					{
+						queryBuilder.Append("''");
+					}
+					else
+					{
+						if (b64Buffer.Length < cellValue.Length)
+							b64Buffer = new byte[cellValue.Length];
+
+						if (!Convert.TryFromBase64Chars(cellValue, b64Buffer, out var decodeLength))
+							throw new Exception($"Failed to decode base64 string: '{cellValue}'");
+
+						queryBuilder.Append("_binary 0x");
+						queryBuilder.Append(Utility.ByteArrayToString(b64Buffer.AsSpan(0, decodeLength)));
+					}
 				}
 				else if (ColumnTypes[i] == typeof(string) || ColumnTypes[i] == typeof(DateTime))
 				{
 					queryBuilder.Append('\'');
-					queryBuilder.Append(rawValue.Replace("'", "''"));
+					if (!cellValue.ContainsAny("\'\\"))
+						queryBuilder.Append(cellValue);
+					else
+						queryBuilder.Append(cellValue.ToString().Replace("\\", "\\\\").Replace("'", "''"));
+
 					queryBuilder.Append('\'');
 				}
 				else
 				{
-					queryBuilder.Append(rawValue);
+					queryBuilder.Append(cellValue);
 				}
 			}
 
@@ -129,8 +173,150 @@ internal class CsvImporter : BaseImporter
 
 		return (count, canReadMore, queryBuilder.ToString());
 	}
-	
-	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns) => throw new NotImplementedException();
+
+	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns)
+	{
+		bool canContinue = true;
+
+		const int minimumSpanSize = 4 * 1024 * 1024;
+
+		var span = pipeWriter.GetSpan(minimumSpanSize);
+		var currentPosition = 0;
+		int rows = 0;
+
+		void WriteString(ReadOnlySpan<char> data, Span<byte> span)
+		{
+			// UTF-8 max bytes per character is 4
+			var maxByteLength = data.Length * 4;
+
+			if (span.Length - currentPosition < maxByteLength)
+			{
+				if (currentPosition > 0)
+					pipeWriter.Advance(currentPosition);
+
+				span = pipeWriter.GetSpan(minimumSpanSize);
+				//writtenSinceFlush += currentPosition;
+				currentPosition = 0;
+
+				//if (writtenSinceFlush > 10 * 1024 * 1024)
+				//	Task.Run(() => pipeWriter.FlushAsync()).Wait();
+			}
+
+			currentPosition += Utility.NoBomUtf8.GetBytes(data, span.Slice(currentPosition));
+		}
+
+		void SanitizeAndWrite(ReadOnlySpan<char> input, Span<byte> span)
+		{
+			bool requiresEscaping = false;
+			int len = input.Length;
+			for (int i = 0; i < len; i++)
+			{
+				char c = input[i];
+				if (c == '"' || c == '\\' || c == '\0' || c == '\n' || c == ',')
+				{
+					requiresEscaping = true;
+					break;
+				}
+			}
+
+			if (!requiresEscaping)
+			{
+				WriteString(input, span);
+				return;
+			}
+
+			WriteString("\"", span);
+
+			int start = 0;
+
+			void Flush(int i, ReadOnlySpan<char> input, Span<byte> span)
+			{
+				if (i > start)
+					WriteString(input.Slice(start, i - start), span);
+			}
+
+			for (int i = 0; i < len; i++)
+			{
+				char c = input[i];
+
+				switch (c)
+				{
+					case '\r':
+						if (i + 1 < len && input[i + 1] == '\n')
+						{
+							Flush(i, input, span);
+							WriteString("\\\n", span);
+							i++;
+							start = i + 1;
+						}
+						break;
+					case '\n':
+						Flush(i, input, span);
+						WriteString("\\\n", span);
+						start = i + 1;
+						break;
+					case '"':
+						Flush(i, input, span);
+						WriteString("\\\"", span);
+						start = i + 1;
+						break;
+					case '\0':
+						Flush(i, input, span);
+						WriteString("\\0", span);
+						start = i + 1;
+						break;
+					case '\\':
+						Flush(i, input, span);
+						WriteString("\\\\", span);
+						start = i + 1;
+						break;
+				}
+			}
+
+			Flush(len, input, span);
+			WriteString("\"", span);
+		}
+
+		while (true)
+		{
+			if (currentPosition >= 3 * 1024 * 1024)
+				break;
+			//if (rows >= 2000)
+			//	break;
+
+			if (!CsvReader.Read())
+			{
+				canContinue = false;
+				break;
+			}
+			
+			WriteString("\n", span);
+
+			for (int columnNum = 0; columnNum < columns.Length; columnNum++)
+			{
+				if (columnNum > 0)
+					WriteString(",", span);
+
+				var cellValue = CsvReader.GetFieldSpan(columnNum);
+
+				if (cellValue.Equals("\\N", StringComparison.Ordinal))
+				{
+					WriteString("\\N", span);
+				}
+				else
+				{
+					SanitizeAndWrite(cellValue, span);
+				}
+			}
+
+			rows++;
+		}
+
+		if (currentPosition > 0)
+			pipeWriter.Advance(currentPosition);
+
+		return (rows, canContinue);
+	}
 
 	public override void Dispose()
 	{
@@ -140,7 +326,7 @@ internal class CsvImporter : BaseImporter
 	}
 }
 
-internal class MysqlInvalidCsvReader : TextReader
+public class MysqlInvalidCsvReader : TextReader
 {
 	private TextReader baseReader;
 
@@ -177,6 +363,9 @@ internal class MysqlInvalidCsvReader : TextReader
 		if (bufferRemaining == 0)
 			return 0;
 
+		int bufferCopied = 0;
+		int lastIndex = 0;
+
 		// calculate safe cutoff
 
 		int usableLength = Math.Min(bufferRemaining, buffer.Length);
@@ -188,37 +377,35 @@ internal class MysqlInvalidCsvReader : TextReader
 		
 		foreach (var index in Locate(underlyingBuffer.AsSpan(0, usableLength)))
 		{
-			int backslashCount = 1;
-			
-			for (int innerIndex = index - 1; innerIndex >= 0; innerIndex--)
+			var length = index - lastIndex;
+			underlyingBuffer.AsSpan(lastIndex, length).CopyTo(buffer.Slice(bufferCopied));
+
+			bufferCopied += length;
+			lastIndex = index + 1;
+
+			if (underlyingBuffer[index + 1] == '\"')
 			{
-				if (underlyingBuffer[innerIndex] != '\\')
-					break;
-
-				backslashCount++;
+				buffer[bufferCopied++] = '\"';
 			}
-
-			if (backslashCount % 2 == 1)
-				underlyingBuffer[index] = '"';
 		}
 
-		// copy fixed buffer over safely
-
-		underlyingBuffer.AsSpan(0, usableLength).CopyTo(buffer);
-
-		// move over any leftover data
-
-		if (bufferRemaining - usableLength == 0)
+		// copy remaining data wholesale
+		if (lastIndex < usableLength)
 		{
-			bufferRemaining = 0;
-		}
-		else
-		{
-			underlyingBuffer.AsSpan(usableLength, bufferRemaining - usableLength).CopyTo(underlyingBuffer);
-			bufferRemaining -= usableLength;
+			var remainingLength = usableLength - lastIndex;
+			underlyingBuffer.AsSpan(lastIndex, usableLength - lastIndex).CopyTo(buffer.Slice(bufferCopied));
+			bufferCopied += remainingLength;
 		}
 
-		return usableLength;
+		bufferRemaining -= usableLength;
+
+		// move any leftover data back to the start of the buffer
+		if (bufferRemaining > 0)
+		{
+			underlyingBuffer.AsSpan(usableLength, bufferRemaining).CopyTo(underlyingBuffer);
+		}
+
+		return bufferCopied;
 	}
 
 	// extremely optimized version from https://stackoverflow.com/a/283648
@@ -236,11 +423,14 @@ internal class MysqlInvalidCsvReader : TextReader
 			if (self[i] != '\\')
 				continue;
 
-			if (self[++i] != '"')
+			if (self[i + 1] == 'N')
 				continue;
 
 			list ??= new List<int>();
-			list.Add(i - 1);
+			list.Add(i);
+
+			if (self[i + 1] == '\\')
+				i++;
 		}
 
 		return list ?? emptyIndexes;

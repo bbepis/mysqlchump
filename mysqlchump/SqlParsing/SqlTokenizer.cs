@@ -41,7 +41,7 @@ public class SqlTokenizer
 	public ReadOnlyMemory<char> ValueString { get; private set; }
 	public long ValueLong { get; private set; }
 	public double ValueDouble { get; private set; }
-	public ReadOnlyMemory<char> ValueBinary { get; private set; }
+	public ReadOnlyMemory<char> ValueBinaryHex { get; private set; }
 
 	public SqlTokenizer(Stream stream)
 	{
@@ -159,7 +159,7 @@ public class SqlTokenizer
 	{
 		// Clear previous token’s values.
 		ValueString = ReadOnlyMemory<char>.Empty;
-		ValueBinary = ReadOnlyMemory<char>.Empty;
+		ValueBinaryHex = ReadOnlyMemory<char>.Empty;
 		ValueLong = 0;
 		ValueDouble = 0;
 		IdentifierWasEscaped = false;
@@ -215,6 +215,14 @@ public class SqlTokenizer
 			return TokenType = SqlTokenType.String;
 		}
 
+		// 0x literal: binary blob without the _binary prefix
+		char? nextCh = Peek(1);
+		if (ch == '0' && (nextCh == 'x' || nextCh == 'X'))
+		{
+			_position += 2; // consume 0x
+			return ReadBinaryBlobFor0x();
+		}
+
 		// Number literal: digit or a '-' sign followed by a digit.
 		if (char.IsDigit(ch.Value) || (ch == '-' && NextIsDigit()))
 		{
@@ -223,9 +231,8 @@ public class SqlTokenizer
 
 		// If the token starts with an X (or x) and is immediately followed by a single quote,
 		// then it is a binary blob of the form X'AAA'.
-		if ((ch == 'X' || ch == 'x') && Peek(1) == '\'')
+		if ((ch == 'X' || ch == 'x') && nextCh == '\'')
 		{
-			// Consume the X and then the quote.
 			_position++; // consume X
 			_position++; // consume the opening '
 			return ReadBinaryBlob('\'');
@@ -248,6 +255,17 @@ public class SqlTokenizer
 					_position++;
 					return ReadBinaryBlobFor0x();
 				}
+
+				if (Peek() == '\'' && Peek(1) == '\'')
+				{
+					// _binary ''
+					// apparently how empty binary strings are represented in --skip-opt
+
+					_position += 2;
+					TokenType = SqlTokenType.BinaryBlob;
+					return TokenType;
+				}
+
 				else
 				{
 					ValueString = ident;
@@ -296,27 +314,40 @@ public class SqlTokenizer
 		// We use a flag to indicate when we have seen escape sequences.
 		bool isStringBuilding = false;
 
+		void stringBuilderFlush()
+		{
+			if (!isStringBuilding)
+			{
+				isStringBuilding = true;
+				stringBuilder.Clear();
+			}
+			stringBuilder.Append(_buffer, tokenStart, _position - tokenStart);
+			tokenStart = 0;
+		}
+
 		// Loop until we hit an unescaped closing quote.
 		while (true)
 		{
 			if (_position >= _bufferLength)
 			{
-				if (!isStringBuilding)
-				{
-					isStringBuilding = true;
-					stringBuilder.Clear();
-				}
-				stringBuilder.Append(_buffer, tokenStart, _bufferLength - tokenStart);
-				tokenStart = 0;
-			}
+				stringBuilderFlush();
 
-			if (!EnsureCharAvailable())
-				throw new Exception("Unterminated string literal");
+				if (!EnsureCharAvailable())
+					throw new Exception("Unterminated string literal");
+			}
 
 			char c = _buffer[_position];
 
 			if (c == '\'')
 			{
+				if (_position + 1 >= _bufferLength)
+				{
+					stringBuilderFlush();
+
+					if (!EnsureCharAvailable(1))
+						throw new Exception("Unterminated string literal");
+				}
+
 				// If the next character is also a quote then treat it as an escape.
 				if (Peek(1) == '\'')
 				{
@@ -479,7 +510,7 @@ public class SqlTokenizer
 			if (c == delimiter)
 			{
 				int tokenEnd = _position;
-				ValueBinary = new ReadOnlyMemory<char>(_buffer, tokenStart, tokenEnd - tokenStart);
+				ValueBinaryHex = new ReadOnlyMemory<char>(_buffer, tokenStart, tokenEnd - tokenStart);
 				_position++; // Consume the closing delimiter.
 				TokenType = SqlTokenType.BinaryBlob;
 				return TokenType;
@@ -488,7 +519,7 @@ public class SqlTokenizer
 		}
 		// If we get here, the blob was unterminated.
 		TokenType = SqlTokenType.BinaryBlob;
-		ValueBinary = ReadOnlyMemory<char>.Empty;
+		ValueBinaryHex = ReadOnlyMemory<char>.Empty;
 		return TokenType;
 	}
 
@@ -496,10 +527,24 @@ public class SqlTokenizer
 	private SqlTokenType ReadBinaryBlobFor0x()
 	{
 		int tokenStart = _position;
+		bool isStringBuilding = false;
+
 		while (true)
 		{
+			if (_position >= _bufferLength)
+			{
+				if (!isStringBuilding)
+				{
+					isStringBuilding = true;
+					stringBuilder.Clear();
+				}
+				stringBuilder.Append(_buffer, tokenStart, _bufferLength - tokenStart);
+				tokenStart = 0;
+			}
+
 			if (!EnsureCharAvailable())
 				break;
+
 			char c = _buffer[_position];
 			// Only allow hex digits.
 			if (Uri.IsHexDigit(c))
@@ -509,8 +554,20 @@ public class SqlTokenizer
 			}
 			break;
 		}
+
 		int tokenEnd = _position;
-		ValueBinary = new ReadOnlyMemory<char>(_buffer, tokenStart, tokenEnd - tokenStart);
+		var remaining = new ReadOnlyMemory<char>(_buffer, tokenStart, tokenEnd - tokenStart);
+
+		if (isStringBuilding)
+		{
+			stringBuilder.Append(remaining);
+			ValueBinaryHex = stringBuilder.ToString().AsMemory();
+		}
+		else
+		{
+			ValueBinaryHex = remaining;
+		}
+
 		TokenType = SqlTokenType.BinaryBlob;
 		return TokenType;
 	}

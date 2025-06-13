@@ -49,11 +49,18 @@ namespace mysqlchump.Export
 					if (!rowStart)
 						textWriter.Write(",");
 
-					object value = column.DataType == typeof(decimal) && !reader.IsDBNull(i)
-						? reader.GetMySqlDecimal(i)
-						: reader[i];
+					if (reader.IsDBNull(i))
+					{
+						textWriter.Write("\\N");
+					}
+					else
+					{
+						object value = column.DataType == typeof(decimal)
+							? reader.GetMySqlDecimal(i)
+							: reader[i];
 
-					StringToCsvCell(GetCsvMySqlStringRepresentation(column, value), textWriter);
+						StringToCsvCell(GetCsvMySqlStringRepresentation(column, value), textWriter);
+					}
 
 					rowStart = false;
 				}
@@ -83,9 +90,6 @@ namespace mysqlchump.Export
 					case '"':
 						replacement = "\"\"";
 						break;
-					case '\\':
-						replacement = "\\\\";
-						break;
 					default:
 						continue;
 				}
@@ -104,9 +108,6 @@ namespace mysqlchump.Export
 
 		private static string GetCsvMySqlStringRepresentation(DbColumn column, object value)
 		{
-			if (value == null || value == DBNull.Value)
-				return "\\N";
-
 			var columnType = column.DataType;
 
 			if (columnType == typeof(string))
