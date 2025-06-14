@@ -223,13 +223,6 @@ ENGINE=InnoDB
 	public async Task BaseImportTest(Stream inputStream, int threadCount, ImportMechanism importMechanism, bool invalidCsv,
 		Func<ImportOptions, Stream, BaseImporter> importerFactory)
 	{
-		//using (var fileStream = new FileStream("C:\\temp\\e\\test_dump.csv", FileMode.Create))
-		//using (var reader = new StreamReader(inputStream, Utility.NoBomUtf8))
-		//using (var mysqlInvalidReader = new MysqlInvalidCsvReader(reader))
-		//	//inputStream.CopyTo(fileStream);
-		//	File.WriteAllText("C:\\temp\\e\\corrected_dump.csv", mysqlInvalidReader.ReadToEnd());
-		//inputStream.Position = 0;
-
 		await using var connection = CreateConnection();
 
 		var command = new MySqlCommand(@"DROP TABLE IF EXISTS `data_secondary`;", connection);
