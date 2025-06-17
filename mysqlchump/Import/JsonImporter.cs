@@ -235,144 +235,24 @@ public class JsonImporter : BaseImporter
 
 	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns)
 	{
-		Span<char> intFormatBuffer = stackalloc char[64];
-
 		bool canContinue = true;
 
 		const int minimumSpanSize = 4 * 1024 * 1024;
-
-		var span = pipeWriter.GetSpan(minimumSpanSize);
-		var currentPosition = 0;
+		using var writer = new PipeTextWriter(pipeWriter, minimumSpanSize);
 		int rows = 0;
-
-		void WriteString(ReadOnlySpan<char> data, Span<byte> span)
-		{
-			// UTF-8 max bytes per character is 4
-			var maxByteLength = data.Length * 4;
-
-			if (span.Length - currentPosition < maxByteLength)
-			{
-				if (currentPosition > 0)
-					pipeWriter.Advance(currentPosition);
-
-				span = pipeWriter.GetSpan(minimumSpanSize);
-				//writtenSinceFlush += currentPosition;
-				currentPosition = 0;
-
-				//if (writtenSinceFlush > 10 * 1024 * 1024)
-				//	Task.Run(() => pipeWriter.FlushAsync()).Wait();
-			}
-
-			currentPosition += Utility.NoBomUtf8.GetBytes(data, span.Slice(currentPosition));
-		}
-
-		byte[] HexAlphabetSpan = new[]
-		{
-			(byte)'0', (byte)'1', (byte)'2', (byte)'3',
-			(byte)'4', (byte)'5', (byte)'6', (byte)'7',
-			(byte)'8', (byte)'9', (byte)'A', (byte)'B',
-			(byte)'C', (byte)'D', (byte)'E', (byte)'F'
-		};
-
-		void WriteHex(ReadOnlySpan<byte> data, Span<byte> span)
-		{
-			for (var i = 0; i < data.Length; ++i)
-			{
-				int j = currentPosition + i * 2;
-
-				span[j] = HexAlphabetSpan[data[i] >> 4];
-				span[j + 1] = HexAlphabetSpan[data[i] & 0xF];
-
-				currentPosition += 2;
-			}
-		}
-
-		void SanitizeAndWrite(ReadOnlySpan<char> input, Span<byte> span)
-		{
-			bool requiresEscaping = false;
-			int len = input.Length;
-			for (int i = 0; i < len; i++)
-			{
-				char c = input[i];
-				if (c == '"' || c == '\\' || c == '\0' || c == '\n' || c == ',')
-				{
-					requiresEscaping = true;
-					break;
-				}
-			}
-
-			if (!requiresEscaping)
-			{
-				WriteString(input, span);
-				return;
-			}
-
-			WriteString("\"", span);
-
-			int start = 0;
-
-			void Flush(int i, ReadOnlySpan<char> input, Span<byte> span)
-			{
-				if (i > start)
-					WriteString(input.Slice(start, i - start), span);
-			}
-
-			for (int i = 0; i < len; i++)
-			{
-				char c = input[i];
-
-				switch (c)
-				{
-					case '\r':
-						if (i + 1 < len && input[i + 1] == '\n')
-						{
-							Flush(i, input, span);
-							WriteString("\\\n", span);
-							i++;
-							start = i + 1;
-						}
-						break;
-					case '\n':
-						Flush(i, input, span);
-						WriteString("\\\n", span);
-						start = i + 1;
-						break;
-					case '"':
-						Flush(i, input, span);
-						WriteString("\\\"", span);
-						start = i + 1;
-						break;
-					case '\0':
-						Flush(i, input, span);
-						WriteString("\\0", span);
-						start = i + 1;
-						break;
-					case '\\':
-						Flush(i, input, span);
-						WriteString("\\\\", span);
-						start = i + 1;
-						break;
-				}
-			}
-
-			Flush(len, input, span);
-			WriteString("\"", span);
-		}
-
+		
 		while (true)
 		{
-			if (currentPosition >= 3 * 1024 * 1024)
+			if (rows >= 2000)
 				break;
-			//if (rows >= 2000)
-			//	break;
 
 			if (JsonTokenizer.Read() == JsonTokenType.EndOfFile || JsonTokenizer.TokenType != JsonTokenType.StartArray)
 			{
 				canContinue = false;
 				break;
 			}
-			
-			WriteString("\n", span);
+
+			writer.Write("\n");
 
 			for (int columnNum = 0; columnNum < columns.Length; columnNum++)
 			{
@@ -380,12 +260,12 @@ public class JsonImporter : BaseImporter
 					throw new InvalidDataException("Row ends prematurely");
 
 				if (columnNum > 0)
-					WriteString(",", span);
+					writer.Write(",");
 
 				switch (JsonTokenizer.TokenType)
 				{
 					case JsonTokenType.Null:
-						WriteString("\\N", span);
+						writer.Write("\\N");
 						break;
 					case JsonTokenType.String:
 						// Dates, strings and binary blobs are processed through here
@@ -393,22 +273,16 @@ public class JsonImporter : BaseImporter
 						// - Binary blobs are read from JSON as Base64, and inserted via LOAD DATA as Base64
 						// - Dates are handled as strings by MySQL
 						// Therefore just pass as-is
-						SanitizeAndWrite(JsonTokenizer.ValueString.Span, span);
+						writer.WriteCsvString(JsonTokenizer.ValueString.Span, true);
 						break;
 					case JsonTokenType.Boolean:
-						WriteString(JsonTokenizer.ValueBoolean ? "1" : "0", span);
+						writer.Write(JsonTokenizer.ValueBoolean ? "1" : "0");
 						break;
 					case JsonTokenType.NumberLong:
-						if (!JsonTokenizer.ValueLong.TryFormat(intFormatBuffer, out int written))
-							throw new Exception("Integer format buffer too small");
-
-						WriteString(intFormatBuffer.Slice(0, written), span);
+						writer.Write(JsonTokenizer.ValueLong);
 						break;
 					case JsonTokenType.NumberDouble:
-						if (!JsonTokenizer.ValueDouble.TryFormat(intFormatBuffer, out int dWritten))
-							throw new Exception("Integer format buffer too small");
-
-						WriteString(intFormatBuffer.Slice(0, dWritten), span);
+						writer.Write(JsonTokenizer.ValueDouble);
 						break;
 					default:
 						throw new InvalidDataException($"Unknown token type: {JsonTokenizer.TokenType}");
@@ -421,8 +295,7 @@ public class JsonImporter : BaseImporter
 			rows++;
 		}
 
-		if (currentPosition > 0)
-			pipeWriter.Advance(currentPosition);
+		writer.Flush();
 
 		return (rows, canContinue);
 	}

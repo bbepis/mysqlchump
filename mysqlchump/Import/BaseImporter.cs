@@ -36,7 +36,6 @@ public class ImportOptions
 	public bool StripIndexes { get; set; }
 
 	public string TargetTable { get; set; }
-	public bool CsvFixInvalid { get; set; }
 	public bool CsvUseHeaderRow { get; set; }
 	public string[] CsvManualColumns { get; set; }
 }

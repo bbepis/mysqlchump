@@ -10,8 +10,12 @@ namespace mysqlchump.Export
 	public class CsvDumper : BaseDumper
 	{
 		public override bool CanMultiplexTables => false;
+		public bool IsMysqlFormat { get; private set; }
 
-		public CsvDumper(MySqlConnection connection, DumpOptions dumpOptions) : base(connection, dumpOptions) { }
+		public CsvDumper(MySqlConnection connection, DumpOptions dumpOptions, bool isMysqlFormat) : base(connection, dumpOptions)
+		{
+			IsMysqlFormat = isMysqlFormat;
+		}
 
 		protected override async Task PerformDump(string table, MySqlDataReader reader, PipeWriter writer, DbColumn[] schema, string createSql, ulong? estimatedRows)
 		{
@@ -28,7 +32,7 @@ namespace mysqlchump.Export
 					if (!rowStart)
 						textWriter.Write(",");
 
-					StringToCsvCell(column.ColumnName, textWriter);
+					textWriter.WriteCsvString(column.ColumnName, IsMysqlFormat);
 
 					rowStart = false;
 				}
@@ -59,7 +63,7 @@ namespace mysqlchump.Export
 							? reader.GetMySqlDecimal(i)
 							: reader[i];
 
-						StringToCsvCell(GetCsvMySqlStringRepresentation(column, value), textWriter);
+						textWriter.WriteCsvString(GetCsvMySqlStringRepresentation(column, value), IsMysqlFormat);
 					}
 
 					rowStart = false;
@@ -69,41 +73,6 @@ namespace mysqlchump.Export
 			}
 
 			textWriter.Flush();
-		}
-
-		private static void StringToCsvCell(ReadOnlySpan<char> str, PipeTextWriter textWriter)
-		{
-			if (str.IndexOfAny(",\"\r\n\\") == -1)
-			{
-				textWriter.Write(str);
-				return;
-			}
-
-			textWriter.Write("\"");
-			int segmentStart = 0;
-			for (int i = 0; i < str.Length; i++)
-			{
-				string replacement = null;
-
-				switch (str[i])
-				{
-					case '"':
-						replacement = "\"\"";
-						break;
-					default:
-						continue;
-				}
-
-				if (i > segmentStart)
-					textWriter.Write(str.Slice(segmentStart, i - segmentStart));
-
-				textWriter.Write(replacement);
-				segmentStart = i + 1;
-			}
-
-			if (segmentStart < str.Length)
-				textWriter.Write(str.Slice(segmentStart));
-			textWriter.Write("\"");
 		}
 
 		private static string GetCsvMySqlStringRepresentation(DbColumn column, object value)

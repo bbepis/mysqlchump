@@ -220,7 +220,7 @@ ENGINE=InnoDB
 		return memoryStream;
 	}
 
-	public async Task BaseImportTest(Stream inputStream, int threadCount, ImportMechanism importMechanism, bool invalidCsv,
+	public async Task BaseImportTest(Stream inputStream, int threadCount, ImportMechanism importMechanism,
 		Func<ImportOptions, Stream, BaseImporter> importerFactory)
 	{
 		await using var connection = CreateConnection();
@@ -239,7 +239,6 @@ ENGINE=InnoDB
 					NoCreate = false,
 					InsertBatchSize = 2000,
 					CsvUseHeaderRow = true,
-					CsvFixInvalid = invalidCsv,
 					ParallelThreads = threadCount
 				},
 				inputStream);
@@ -276,7 +275,7 @@ WHERE
 		foreach (var threadCount in (int[])[1, 4])
 		foreach (var importMechanism in (ImportMechanism[])[ImportMechanism.SqlStatements, ImportMechanism.LoadDataInfile])
 		{
-			TestCaseData createData(string formatName, string? fileGzImport, bool invalidCsv,
+			TestCaseData createData(string formatName, string? fileGzImport,
 				Func<MySqlConnection, Export.DumpOptions, BaseDumper>? dumperFactory,
 				Func<ImportOptions, Stream, BaseImporter> importerFactory)
 			{
@@ -284,7 +283,7 @@ WHERE
 				var mechanismName = importMechanism == ImportMechanism.SqlStatements ? "SQL" : "LoadInfile";
 				var threading = threadCount == 1 ? "Singlethreaded" : $"Multithreaded ({threadCount})";
 
-				return new TestCaseData(fileGzImport, threadCount, importMechanism, invalidCsv, dumperFactory, importerFactory)
+				return new TestCaseData(fileGzImport, threadCount, importMechanism, dumperFactory, importerFactory)
 				{
 					TestName = $"{action} [{formatName}] - ({mechanismName}) ({threading})",
 					//Properties =
@@ -294,46 +293,50 @@ WHERE
 				};
 			}
 
-			yield return createData("JSON", null, false,
+			yield return createData("JSON", null,
 				(connection, options) => new JsonDumper(connection, options),
 				(options, stream) => new JsonImporter(options, stream));
 
-			yield return createData("CSV", null, false,
-				(connection, options) => new CsvDumper(connection, options),
-				(options, stream) => new CsvImporter(options, stream));
+			yield return createData("CSV (compliant)", null,
+				(connection, options) => new CsvDumper(connection, options, false),
+				(options, stream) => new CsvImporter(options, stream, false));
 
-			yield return createData("CSV (mysql export)", "data\\mysql_export.csv.gz", true, null,
-				(options, stream) => new CsvImporter(options, stream));
+			yield return createData("CSV (mysql format)", null,
+				(connection, options) => new CsvDumper(connection, options, true),
+				(options, stream) => new CsvImporter(options, stream, true));
 
-			yield return createData("CSV (compliant)", "data\\csv_compliant.csv.gz", false, null,
-				(options, stream) => new CsvImporter(options, stream));
+			yield return createData("CSV (mysql export)", "data\\mysql_export.csv.gz", null,
+				(options, stream) => new CsvImporter(options, stream, true));
 
-			yield return createData("MySQL", null, false,
+			yield return createData("CSV (compliant)", "data\\csv_compliant.csv.gz", null,
+				(options, stream) => new CsvImporter(options, stream, false));
+
+			yield return createData("MySQL", null,
 				(connection, options) => new MysqlDumper(connection, options),
 				(options, stream) => new MysqlImporter(options, stream));
 
-			yield return createData("mysqldump (opt)", "data\\test_dump.sql.gz", false, null,
+			yield return createData("mysqldump (opt)", "data\\test_dump.sql.gz", null,
 				(options, stream) => new MysqlImporter(options, stream));
 
-			yield return createData("mysqldump (skip-opt)", "data\\test_dump_skipopt.sql.gz", false, null,
+			yield return createData("mysqldump (skip-opt)", "data\\test_dump_skipopt.sql.gz", null,
 				(options, stream) => new MysqlImporter(options, stream));
 		}
 	}
 
 	[TestCaseSource(nameof(TestCaseGenerator))]
-	public async Task DoExportImportTest(string? fileGzImport, int threadCount, ImportMechanism importMechanism, bool invalidCsv,
+	public async Task DoExportImportTest(string? fileGzImport, int threadCount, ImportMechanism importMechanism,
 		Func<MySqlConnection, Export.DumpOptions, BaseDumper>? dumperFactory,
 		Func<ImportOptions, Stream, BaseImporter> importerFactory)
 	{
 		if (fileGzImport != null)
 		{
 			await using var inputStream = new GZipStream(new FileStream(fileGzImport, FileMode.Open), CompressionMode.Decompress, false);
-			await BaseImportTest(inputStream, threadCount, importMechanism, invalidCsv, importerFactory);
+			await BaseImportTest(inputStream, threadCount, importMechanism, importerFactory);
 		}
 		else
 		{
 			using var memoryStream = await BaseExport(dumperFactory);
-			await BaseImportTest(memoryStream, threadCount, importMechanism, invalidCsv, importerFactory);
+			await BaseImportTest(memoryStream, threadCount, importMechanism, importerFactory);
 		}
 	}
 }

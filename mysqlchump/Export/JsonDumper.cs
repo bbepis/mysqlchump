@@ -31,9 +31,9 @@ public class JsonDumper : BaseDumper
 		}
 
 		JsonWriter.Write("{\"name\":");
-		WriteJsonString(table);
+		JsonWriter.WriteJsonString(table);
 		JsonWriter.Write(",\"create_statement\":");
-		WriteJsonString(createSql);
+		JsonWriter.WriteJsonString(createSql);
 
 		JsonWriter.Write(",\"columns\":{");
 
@@ -45,9 +45,9 @@ public class JsonDumper : BaseDumper
 				JsonWriter.Write(",");
 			isFirst = false;
 
-			WriteJsonString(column.ColumnName);
+			JsonWriter.WriteJsonString(column.ColumnName);
 			JsonWriter.Write(":");
-			WriteJsonString(column.DataTypeName);
+			JsonWriter.WriteJsonString(column.DataTypeName);
 		}
 
 		JsonWriter.Write("},\"approx_count\":");
@@ -79,7 +79,7 @@ public class JsonDumper : BaseDumper
 				}
 				else if (column.DataType == typeof(string))
 				{
-					WriteJsonString((string)reader.GetValue(i));
+					JsonWriter.WriteJsonString((string)reader.GetValue(i));
 				}
 				else
 				{
@@ -111,32 +111,30 @@ public class JsonDumper : BaseDumper
 	{
 		var columnType = column.DataType;
 
-		if (columnType == typeof(byte)
-			|| columnType == typeof(sbyte)
-			|| columnType == typeof(ushort)
-			|| columnType == typeof(short)
-			|| columnType == typeof(uint)
-			|| columnType == typeof(int)
-			|| columnType == typeof(ulong)
-			|| columnType == typeof(long)
-			|| columnType == typeof(float)
-			|| columnType == typeof(double)
-			|| columnType == typeof(decimal))
-		{
-			JsonWriter.Write(value.ToString());
-			return;
-		}
+		if (value is byte @byte)       { JsonWriter.Write(@byte); return; }
+		if (value is sbyte @sbyte)     { JsonWriter.Write(@sbyte); return; }
+		if (value is ushort @ushort)   { JsonWriter.Write(@ushort); return; }
+		if (value is short @short)     { JsonWriter.Write(@short); return; }
+		if (value is uint @uint)       { JsonWriter.Write(@uint); return; }
+		if (value is int @int)         { JsonWriter.Write(@int); return; }
+		if (value is ulong @ulong)     { JsonWriter.Write(@ulong); return; }
+		if (value is long @long)       { JsonWriter.Write(@long); return; }
+		if (value is float @float)     { JsonWriter.Write(@float); return; }
+		if (value is double @double)   { JsonWriter.Write(@double); return; }
+		if (value is decimal @decimal) { JsonWriter.Write(@decimal); return; }
 
-		if (columnType == typeof(MySqlDecimal))
+		if (value is MySqlDecimal mySqlDecimal)
 		{
-			JsonWriter.Write(((MySqlDecimal)value).ToString());
+			JsonWriter.Write(mySqlDecimal.ToString());
 			return;
 		}
 
 		if (columnType == typeof(DateTime))
 		{
 			var dtValue = (DateTime)value;
-			JsonWriter.Write($"\"{dtValue:yyyy-MM-ddTH:mm:ss.fffZ}\"");
+			JsonWriter.Write("\"");
+			JsonWriter.Write(dtValue, "yyyy-MM-ddTH:mm:ss.fffZ");
+			JsonWriter.Write("\"");
 			return;
 		}
 
@@ -158,71 +156,10 @@ public class JsonDumper : BaseDumper
 			if (!Convert.TryToBase64Chars(data, chars, out int charsWritten))
 				throw new Exception("Could not convert data to base 64");
 
-			WriteJsonString(chars.Slice(0, charsWritten));
+			JsonWriter.WriteJsonString(chars.Slice(0, charsWritten));
 			return;
 		}
 
 		throw new SqlTypeException($"Could not represent type: {column.DataTypeName}");
-	}
-
-	public void WriteJsonString(ReadOnlySpan<char> input)
-	{
-		JsonWriter.Write("\"");
-
-		int runStart = 0;
-
-		for (int i = 0; i < input.Length; i++)
-		{
-			char c = input[i];
-			string escapeSequence = null;
-
-			switch (c)
-			{
-				case '\"':
-					escapeSequence = "\\\"";
-					break;
-				case '\\':
-					escapeSequence = "\\\\";
-					break;
-				case '\b':
-					escapeSequence = "\\b";
-					break;
-				case '\f':
-					escapeSequence = "\\f";
-					break;
-				case '\n':
-					escapeSequence = "\\n";
-					break;
-				case '\r':
-					escapeSequence = "\\r";
-					break;
-				case '\t':
-					escapeSequence = "\\t";
-					break;
-				default:
-					if (c < ' ')
-					{
-						escapeSequence = "\\u" + ((int)c).ToString("x4");
-					}
-					break;
-			}
-
-			if (escapeSequence != null)
-			{
-				if (i > runStart)
-				{
-					JsonWriter.Write(input.Slice(runStart, i - runStart));
-				}
-				JsonWriter.Write(escapeSequence);
-				runStart = i + 1;
-			}
-		}
-
-		if (runStart < input.Length)
-		{
-			JsonWriter.Write(input.Slice(runStart, input.Length - runStart));
-		}
-
-		JsonWriter.Write("\"");
 	}
 }

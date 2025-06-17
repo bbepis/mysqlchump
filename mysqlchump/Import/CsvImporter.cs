@@ -12,12 +12,17 @@ namespace mysqlchump.Import;
 
 public class CsvImporter : BaseImporter
 {
+	public bool IsMysqlFormat { get; private set; }
+
 	protected StreamReader StreamReader { get; set; }
 	protected CsvDataReader CsvReader { get; set; }
 
 	protected Type[] ColumnTypes { get; set; }
 
-	public CsvImporter(ImportOptions options, Stream dataStream) : base(options, dataStream) { }
+	public CsvImporter(ImportOptions options, Stream dataStream, bool isMysqlFormat) : base(options, dataStream)
+	{
+		IsMysqlFormat = isMysqlFormat;
+	}
 
 	protected bool HasReadFile = false;
 	protected override async Task<(bool foundAnotherTable, string createTableSql, ulong? approxRows)> ReadToNextTable()
@@ -26,7 +31,7 @@ public class CsvImporter : BaseImporter
 			return (false, null, null);
 
 		StreamReader = new StreamReader(DataStream, Utility.NoBomUtf8);
-		CsvReader = await CsvDataReader.CreateAsync(ImportOptions.CsvFixInvalid ? new MysqlInvalidCsvReader(StreamReader) : StreamReader,
+		CsvReader = await CsvDataReader.CreateAsync(IsMysqlFormat ? new MysqlInvalidCsvReader(StreamReader) : StreamReader,
 			new CsvDataReaderOptions { BufferSize = 128000, HasHeaders = ImportOptions.CsvUseHeaderRow, ResultSetMode = ResultSetMode.SingleResult, Delimiter = ',' });
 
 		HasReadFile = true;
@@ -180,109 +185,14 @@ public class CsvImporter : BaseImporter
 
 		const int minimumSpanSize = 4 * 1024 * 1024;
 
-		var span = pipeWriter.GetSpan(minimumSpanSize);
-		var currentPosition = 0;
+		using var writer = new PipeTextWriter(pipeWriter, minimumSpanSize);
 		int rows = 0;
 
-		void WriteString(ReadOnlySpan<char> data, Span<byte> span)
-		{
-			// UTF-8 max bytes per character is 4
-			var maxByteLength = data.Length * 4;
-
-			if (span.Length - currentPosition < maxByteLength)
-			{
-				if (currentPosition > 0)
-					pipeWriter.Advance(currentPosition);
-
-				span = pipeWriter.GetSpan(minimumSpanSize);
-				//writtenSinceFlush += currentPosition;
-				currentPosition = 0;
-
-				//if (writtenSinceFlush > 10 * 1024 * 1024)
-				//	Task.Run(() => pipeWriter.FlushAsync()).Wait();
-			}
-
-			currentPosition += Utility.NoBomUtf8.GetBytes(data, span.Slice(currentPosition));
-		}
-
-		void SanitizeAndWrite(ReadOnlySpan<char> input, Span<byte> span)
-		{
-			bool requiresEscaping = false;
-			int len = input.Length;
-			for (int i = 0; i < len; i++)
-			{
-				char c = input[i];
-				if (c == '"' || c == '\\' || c == '\0' || c == '\n' || c == ',')
-				{
-					requiresEscaping = true;
-					break;
-				}
-			}
-
-			if (!requiresEscaping)
-			{
-				WriteString(input, span);
-				return;
-			}
-
-			WriteString("\"", span);
-
-			int start = 0;
-
-			void Flush(int i, ReadOnlySpan<char> input, Span<byte> span)
-			{
-				if (i > start)
-					WriteString(input.Slice(start, i - start), span);
-			}
-
-			for (int i = 0; i < len; i++)
-			{
-				char c = input[i];
-
-				switch (c)
-				{
-					case '\r':
-						if (i + 1 < len && input[i + 1] == '\n')
-						{
-							Flush(i, input, span);
-							WriteString("\\\n", span);
-							i++;
-							start = i + 1;
-						}
-						break;
-					case '\n':
-						Flush(i, input, span);
-						WriteString("\\\n", span);
-						start = i + 1;
-						break;
-					case '"':
-						Flush(i, input, span);
-						WriteString("\\\"", span);
-						start = i + 1;
-						break;
-					case '\0':
-						Flush(i, input, span);
-						WriteString("\\0", span);
-						start = i + 1;
-						break;
-					case '\\':
-						Flush(i, input, span);
-						WriteString("\\\\", span);
-						start = i + 1;
-						break;
-				}
-			}
-
-			Flush(len, input, span);
-			WriteString("\"", span);
-		}
 
 		while (true)
 		{
-			if (currentPosition >= 3 * 1024 * 1024)
+			if (rows >= 2000)
 				break;
-			//if (rows >= 2000)
-			//	break;
 
 			if (!CsvReader.Read())
 			{
@@ -290,30 +200,29 @@ public class CsvImporter : BaseImporter
 				break;
 			}
 			
-			WriteString("\n", span);
+			writer.Write("\n");
 
 			for (int columnNum = 0; columnNum < columns.Length; columnNum++)
 			{
 				if (columnNum > 0)
-					WriteString(",", span);
+					writer.Write(",");
 
 				var cellValue = CsvReader.GetFieldSpan(columnNum);
 
 				if (cellValue.Equals("\\N", StringComparison.Ordinal))
 				{
-					WriteString("\\N", span);
+					writer.Write("\\N");
 				}
 				else
 				{
-					SanitizeAndWrite(cellValue, span);
+					writer.WriteCsvString(cellValue, true);
 				}
 			}
 
 			rows++;
 		}
 
-		if (currentPosition > 0)
-			pipeWriter.Advance(currentPosition);
+		writer.Flush();
 
 		return (rows, canContinue);
 	}
@@ -338,10 +247,7 @@ public class MysqlInvalidCsvReader : TextReader
 		this.baseReader = baseReader;
 	}
 
-	public override int Read()
-	{
-		throw new NotImplementedException();
-	}
+	public override int Read() => throw new NotImplementedException();
 
 	public override int Read(char[] buffer, int index, int count) => Read(new Span<char>(buffer, index, count));
 

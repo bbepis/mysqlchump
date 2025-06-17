@@ -1,21 +1,26 @@
 using System;
+using System.Buffers;
+using System.Formats.Asn1;
 using System.IO.Pipelines;
 using System.Threading.Tasks;
 
 namespace mysqlchump;
 
-public class PipeTextWriter
+public class PipeTextWriter : IDisposable
 {
 	public PipeWriter Writer { get; }
 
-	private char[] Buffer;
+	private IMemoryOwner<char> _memoryOwner;
+	private Memory<char> Buffer;
 	private int CurrentWritten = 0;
 	private Task<FlushResult> flushTask = null;
 
-	public PipeTextWriter(PipeWriter writer, int bufferSize = 512 * 1024)
+	public PipeTextWriter(PipeWriter writer, int minBufferSize = 512 * 1024)
 	{
 		Writer = writer;
-		Buffer = new char[bufferSize];
+
+		_memoryOwner = MemoryPool<char>.Shared.Rent(minBufferSize);
+		Buffer = _memoryOwner.Memory;
 	}
 
 	public void Write(ReadOnlySpan<char> str)
@@ -31,7 +36,7 @@ public class PipeTextWriter
 
 			var span = Writer.GetSpan(str.Length * 4);
 
-			if (!Utility.NoBomUtf8.TryGetBytes(Buffer.AsSpan(0, CurrentWritten), span, out bytesWritten))
+			if (!Utility.NoBomUtf8.TryGetBytes(Buffer.Span.Slice(0, CurrentWritten), span, out bytesWritten))
 				throw new Exception("Failed to UTF-8 encode string to pipe writer");
 
 			Writer.Advance(bytesWritten);
@@ -43,9 +48,21 @@ public class PipeTextWriter
 		if (str.Length + CurrentWritten > Buffer.Length)
 			Flush(true);
 
-		str.CopyTo(Buffer.AsSpan(CurrentWritten));
+		str.CopyTo(Buffer.Span.Slice(CurrentWritten));
 
 		CurrentWritten += str.Length;
+	}
+
+	public void Write<T>(T value, ReadOnlySpan<char> format = default) where T : struct, ISpanFormattable
+	{
+		if (CurrentWritten + 64 > Buffer.Length)
+			Flush(true);
+
+		var targetSpan = Buffer.Span.Slice(CurrentWritten);
+
+		value.TryFormat(targetSpan, out int written, format, null);
+
+		CurrentWritten += written;
 	}
 
 	// https://gist.github.com/antoninkriz/915364de7f264dd14a572936abd5228b
@@ -61,27 +78,183 @@ public class PipeTextWriter
 
 	public void WriteHex(byte[] data)
 	{
+		var span = Buffer.Span;
+
 		for (var i = 0; i < data.Length; ++i)
 		{
 			if (Buffer.Length - (CurrentWritten + 2) < 2)
 				Flush();
 
-			Buffer[CurrentWritten] = (char)HexAlphabetSpan[data[i] >> 4];
-			Buffer[CurrentWritten + 1] = (char)HexAlphabetSpan[data[i] & 0xF];
+			span[CurrentWritten] = (char)HexAlphabetSpan[data[i] >> 4];
+			span[CurrentWritten + 1] = (char)HexAlphabetSpan[data[i] & 0xF];
 
 			CurrentWritten += 2;
 		}
 	}
 
+	public void WriteJsonString(ReadOnlySpan<char> input)
+	{
+		Write("\"");
+
+		int runStart = 0;
+
+		for (int i = 0; i < input.Length; i++)
+		{
+			char c = input[i];
+			string escapeSequence = null;
+
+			switch (c)
+			{
+				case '\"':
+					escapeSequence = "\\\"";
+					break;
+				case '\\':
+					escapeSequence = "\\\\";
+					break;
+				case '\b':
+					escapeSequence = "\\b";
+					break;
+				case '\f':
+					escapeSequence = "\\f";
+					break;
+				case '\n':
+					escapeSequence = "\\n";
+					break;
+				case '\r':
+					escapeSequence = "\\r";
+					break;
+				case '\t':
+					escapeSequence = "\\t";
+					break;
+				default:
+					if (c < ' ')
+					{
+						escapeSequence = "\\u" + ((int)c).ToString("x4");
+					}
+					break;
+			}
+
+			if (escapeSequence != null)
+			{
+				if (i > runStart)
+				{
+					Write(input.Slice(runStart, i - runStart));
+				}
+				Write(escapeSequence);
+				runStart = i + 1;
+			}
+		}
+
+		if (runStart < input.Length)
+		{
+			Write(input.Slice(runStart, input.Length - runStart));
+		}
+
+		Write("\"");
+	}
+
+	public void WriteCsvString(ReadOnlySpan<char> input, bool mysqlInvalidFormat)
+	{
+		bool requiresEscaping = false;
+		int len = input.Length;
+		for (int i = 0; i < len; i++)
+		{
+			char c = input[i];
+			if (c == '"' || c == '\\' || c == '\0' || c == '\n' || c == ',')
+			{
+				requiresEscaping = true;
+				break;
+			}
+		}
+
+		if (!requiresEscaping)
+		{
+			Write(input);
+			return;
+		}
+
+		Write("\"");
+
+		int start = 0;
+
+		void FlushChunk(int i, ReadOnlySpan<char> input)
+		{
+			if (i > start)
+				Write(input.Slice(start, i - start));
+		}
+
+		if (mysqlInvalidFormat)
+		{
+			for (int i = 0; i < len; i++)
+			{
+				char c = input[i];
+
+				switch (c)
+				{
+					case '\r':
+						if (i + 1 < len && input[i + 1] == '\n')
+						{
+							FlushChunk(i, input);
+							Write("\\\n");
+							i++;
+							start = i + 1;
+						}
+						break;
+					case '\n':
+						FlushChunk(i, input);
+						Write("\\\n");
+						start = i + 1;
+						break;
+					case '"':
+						FlushChunk(i, input);
+						Write("\\\"");
+						start = i + 1;
+						break;
+					case '\0':
+						FlushChunk(i, input);
+						Write("\\0");
+						start = i + 1;
+						break;
+					case '\\':
+						FlushChunk(i, input);
+						Write("\\\\");
+						start = i + 1;
+						break;
+				}
+			}
+		}
+		else
+		{
+			for (int i = 0; i < len; i++)
+			{
+				char c = input[i];
+
+				switch (c)
+				{
+					case '"':
+						FlushChunk(i, input);
+						Write("\"\"");
+						start = i + 1;
+						break;
+				}
+			}
+		}
+
+		FlushChunk(len, input);
+		Write("\"");
+	}
 
 	public void Flush(bool softFlush = false)
 	{
 		if (flushTask != null && !flushTask.IsCompleted)
 			flushTask.Wait();
 
+		if (CurrentWritten == 0)
+			return;
+
 		var span = Writer.GetSpan(CurrentWritten * 4);
 
-		if (!Utility.NoBomUtf8.TryGetBytes(Buffer.AsSpan(0, CurrentWritten), span, out int bytesWritten))
+		if (!Utility.NoBomUtf8.TryGetBytes(Buffer.Span.Slice(0, CurrentWritten), span, out int bytesWritten))
 			throw new Exception("Failed to UTF-8 encode string to pipe writer");
 
 		Writer.Advance(bytesWritten);
@@ -92,5 +265,17 @@ public class PipeTextWriter
 			_ = Writer.FlushAsync().AsTask().Result;
 		
 		CurrentWritten = 0;
+	}
+
+	public void Dispose()
+	{
+		_memoryOwner.Dispose();
+		_memoryOwner = null;
+	}
+
+	~PipeTextWriter()
+	{
+		if (_memoryOwner != null)
+			Dispose();
 	}
 }
