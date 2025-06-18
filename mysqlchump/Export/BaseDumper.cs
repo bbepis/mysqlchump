@@ -18,6 +18,7 @@ public class DumpOptions
 	public bool MysqlWriteTruncate { get; set; }
 
 	public bool CsvWriteHeader { get; set; }
+	public bool Silent { get; set; }
 }
 
 public abstract class BaseDumper
@@ -56,9 +57,14 @@ public abstract class BaseDumper
 
 		ExportedRows = 0;
 
+		var progressDisabled = Console.IsErrorRedirected || DumpOptions.Silent;
+
 		var cts = new CancellationTokenSource();
 		var progressTask = Task.Run(async () =>
 		{
+			if (progressDisabled)
+				return;
+
 			while (true)
 			{
 				Console.Error.Write("\u001b[1000D"); // move cursor to the left
@@ -114,7 +120,9 @@ public abstract class BaseDumper
 
 		cts.Cancel();
 		progressTask.Wait();
-		Console.Error.WriteLine();
+
+		if (!progressDisabled)
+			Console.Error.WriteLine();
 	}
 
 	protected abstract Task PerformDump(string table, MySqlDataReader reader, PipeWriter writer, DbColumn[] schema, string createSql, ulong? estimatedRows);

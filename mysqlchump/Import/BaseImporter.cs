@@ -38,6 +38,8 @@ public class ImportOptions
 	public string TargetTable { get; set; }
 	public bool CsvUseHeaderRow { get; set; }
 	public string[] CsvManualColumns { get; set; }
+
+	public bool Silent { get; set; }
 }
 
 public abstract class BaseImporter : IDisposable
@@ -309,7 +311,7 @@ WHERE table_schema = '{connection.Database}'
 
 		var cts = new CancellationTokenSource();
 
-		bool printProgress = !Console.IsErrorRedirected;
+		bool printProgress = !Console.IsErrorRedirected && !importOptions.Silent;
 
 		if (printProgress)
 			_ = Task.Run(async () =>

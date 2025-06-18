@@ -39,12 +39,14 @@ class Program
 		var selectOption = new Option<string>(new[] { "--select", "-q" }, () => "SELECT * FROM `{table}`", "The select query to use when filtering rows/columns. If not specified, will dump the entire table.\nTable being examined is specified with \"{table}\".");
 		var noCreationOption = new Option<bool>(new[] { "--no-creation" }, "Don't output table creation statements.");
 		var truncateOption = new Option<bool>(new[] { "--truncate" }, "Prepend data insertions with a TRUNCATE command.");
+		var silentOption = new Option<bool>(new[] { "--silent" }, "Prevents all progress-related output");
 		
 		var outputFileArgument = new Argument<string>("output location", "Specify either a file or a folder to output to. '-' for stdout, otherwise defaults to creating files in the current directory") { Arity = ArgumentArity.ZeroOrOne };
 
 		var exportCommand = new Command("export", "Exports data from a database")
 		{
-			tableOption, tablesOption, connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, outputFormatOption, selectOption, noCreationOption, truncateOption, outputFileArgument
+			tableOption, tablesOption, connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption,
+			outputFormatOption, selectOption, noCreationOption, truncateOption, outputFileArgument, silentOption
 		};
 
 		exportCommand.SetHandler(async context =>
@@ -83,7 +85,8 @@ class Program
 			{
 				SelectQuery = result.GetValueForOption(selectOption),
 				MysqlWriteCreateTable = !result.GetValueForOption(noCreationOption),
-				MysqlWriteTruncate = result.GetValueForOption(truncateOption)
+				MysqlWriteTruncate = result.GetValueForOption(truncateOption),
+				Silent = result.GetValueForOption(silentOption)
 			};
 
 			context.ExitCode = await ExportMainAsync(tables, connectionString, result.GetValueForOption(outputFormatOption),
@@ -113,7 +116,7 @@ class Program
 		{
 			connectionStringOption, serverOption, portOption, databaseOption, usernameOption, passwordOption, inputFormatOption, importMechanismOption, importTableOption, parallelOption,
 			insertIgnoreOption, csvImportColumnsOption, csvUseHeadersOption, inputFileArgument, importNoCreationOption, aggressiveUnsafeOption,
-			setInnoDbOption, setCompressedOption, sourceTablesOption, deferIndexesOption, stripIndexesOption
+			setInnoDbOption, setCompressedOption, sourceTablesOption, deferIndexesOption, stripIndexesOption, silentOption
 		};
 
 		importCommand.SetHandler(async context =>
@@ -156,6 +159,8 @@ class Program
 			var csvUseHeaders = result.GetValueForOption(csvUseHeadersOption);
 			var csvColumns = result.GetValueForOption(csvImportColumnsOption);
 
+			var silent = result.GetValueForOption(silentOption);
+
 			if (inputFormat == InputFormat.csv && string.IsNullOrWhiteSpace(csvColumns) && !csvUseHeaders)
 			{
 				Console.WriteLine("Either columns (--csv-columns) or use headers (--csv-use-headers) required for CSV import");
@@ -187,7 +192,8 @@ class Program
 						StripIndexes = stripIndexes,
 						TargetTable = importTable,
 						CsvUseHeaderRow = csvUseHeaders,
-						CsvManualColumns = csvColumns?.Split(',')
+						CsvManualColumns = csvColumns?.Split(','),
+						Silent = silent
 					});
 
 			if (Directory.Exists(inputFile))
