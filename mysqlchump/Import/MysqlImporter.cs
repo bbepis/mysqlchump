@@ -260,7 +260,151 @@ public class MysqlImporter : BaseImporter
 		return (0, false, null);
 	}
 
+	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns)
+	{
+		int count = 0;
 
-	protected override (int rows, bool canContinue) ReadDataCsv(PipeWriter pipeWriter, string tableName, ColumnInfo[] columns) => throw new NotImplementedException();
-	public override void Dispose() => throw new NotImplementedException();
+		using var textWriter = new PipeTextWriter(pipeWriter);
+
+		string[] currentColumnList = columns.Select(x => x.name).ToArray();
+		string[] testColumnList = new string[128];
+
+		var expectedTableName = !string.IsNullOrWhiteSpace(ImportOptions.TargetTable)
+			? ImportOptions.SourceTables[0]
+			: tableName;
+
+		bool canContinue = true;
+
+		var token = SqlTokenizer.Read();
+		while (true)
+		{
+			if (token == SqlTokenType.EOF)
+			{
+				canContinue = false;
+				break;
+			}
+
+			TrySkipOverStoredProcedure();
+			token = SqlTokenizer.TokenType;
+
+			if (AssertIdentifier("INSERT", false))
+			{
+				token = SqlTokenizer.Read();
+				
+				if (AssertIdentifier("IGNORE", false))
+					token = SqlTokenizer.Read();
+
+				AssertIdentifier("INTO");
+
+				token = SqlTokenizer.Read();
+				if (!SqlTokenizer.ValueString.Span.Equals(expectedTableName, StringComparison.Ordinal))
+					throw new Exception($"Table name incorrect, was expecting `{expectedTableName}` but got `{SqlTokenizer.ValueString}`");
+
+				token = SqlTokenizer.Read();
+
+				if (token == SqlTokenType.LeftBrace)
+				{
+					int testColumnCount = 0;
+					while (true)
+					{
+						token = SqlTokenizer.Read();
+						
+						if (token == SqlTokenType.RightBrace)
+							break;
+
+						if (token == SqlTokenType.Identifier)
+							testColumnList[testColumnCount++] = SqlTokenizer.ValueString.ToString();
+
+						token = SqlTokenizer.Read();
+
+						if (token == SqlTokenType.RightBrace)
+							break;
+					}
+
+					if (testColumnCount != currentColumnList.Length || !testColumnList.AsSpan(0, testColumnCount).SequenceEqual(currentColumnList))
+						throw new NotImplementedException("Need to handle custom column specification");
+
+					token = SqlTokenizer.Read();
+				}
+
+				AssertIdentifier("VALUES");
+
+				while (true)
+				{
+					token = SqlTokenizer.Read();
+
+					switch (token)
+					{
+						case SqlTokenType.Comma:
+							textWriter.Write(",");
+							break;
+						case SqlTokenType.LeftBrace:
+							textWriter.Write('\n');
+							break;
+						case SqlTokenType.RightBrace:
+							count++;
+							break;
+						case SqlTokenType.Equals:
+							break;
+						case SqlTokenType.String:
+							textWriter.WriteCsvString(SqlTokenizer.ValueString.Span, true);
+							break;
+						case SqlTokenType.Integer:
+							textWriter.Write(SqlTokenizer.ValueLong);
+							break;
+						case SqlTokenType.Double:
+							textWriter.Write(SqlTokenizer.ValueDouble);
+							break;
+						case SqlTokenType.Null:
+							textWriter.Write("\\N");
+							break;
+						case SqlTokenType.BinaryBlob:
+							if (SqlTokenizer.ValueBinaryHex.Length > 0)
+							{
+								var data = Convert.FromHexString(SqlTokenizer.ValueBinaryHex.Span);
+								textWriter.WriteBase64(data);
+							}
+							break;
+						case SqlTokenType.Identifier:
+							throw new Exception($"Unexpected identifier '{SqlTokenizer.ValueString}'");
+						case SqlTokenType.EOF:
+							throw new Exception($"Unexpected end of file");
+					}
+
+					if (token == SqlTokenType.Semicolon)
+						break;
+				}
+			}
+
+			if (AssertIdentifier("CREATE", false))
+			{
+				token = SqlTokenizer.Read();
+
+				if (AssertIdentifier("TABLE", false))
+				{
+					ImmediateCreateTable = true;
+					canContinue = false;
+					break;
+				}
+			}
+
+			if (count >= ImportOptions.InsertBatchSize)
+			{
+				break;
+			}
+
+			token = SqlTokenizer.Read();
+		}
+
+		textWriter.Flush();
+
+		if (count > 0)
+		{
+			return (count, canContinue);
+		}
+
+		return (0, false);
+	}
+
+	public override void Dispose() { }
 }
