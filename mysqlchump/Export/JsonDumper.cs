@@ -144,19 +144,11 @@ public class JsonDumper : BaseDumper
 			return;
 		}
 
-		if (columnType == typeof(byte[]))
+		if (value is byte[] data)
 		{
-			var data = (byte[])value;
-
-			if (data.Length > 512 * 1024)
-				throw new Exception("Cannot currently handle binary blobs bigger than 512kb");
-
-			Span<char> chars = stackalloc char[Base64.GetMaxEncodedToUtf8Length(data.Length)];
-
-			if (!Convert.TryToBase64Chars(data, chars, out int charsWritten))
-				throw new Exception("Could not convert data to base 64");
-
-			JsonWriter.WriteJsonString(chars.Slice(0, charsWritten));
+			JsonWriter.Write("\"");
+			JsonWriter.WriteBase64(data);
+			JsonWriter.Write("\"");
 			return;
 		}
 

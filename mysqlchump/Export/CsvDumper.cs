@@ -1,4 +1,5 @@
 using System;
+using System.Buffers.Text;
 using System.Data.Common;
 using System.Data.SqlTypes;
 using System.IO.Pipelines;
@@ -63,7 +64,7 @@ namespace mysqlchump.Export
 							? reader.GetMySqlDecimal(i)
 							: reader[i];
 
-						textWriter.WriteCsvString(GetCsvMySqlStringRepresentation(column, value), IsMysqlFormat);
+						WriteCsvMySqlValue(textWriter, value);
 					}
 
 					rowStart = false;
@@ -75,45 +76,53 @@ namespace mysqlchump.Export
 			textWriter.Flush();
 		}
 
-		private static string GetCsvMySqlStringRepresentation(DbColumn column, object value)
+		private void WriteCsvMySqlValue(PipeTextWriter writer, object value)
 		{
-			var columnType = column.DataType;
-
-			if (columnType == typeof(string))
+			if (value is string @string)
 			{
-				return (string)value;
+				writer.WriteCsvString(@string, IsMysqlFormat);
+				return;
 			}
 
-			if (columnType == typeof(byte)
-				|| columnType == typeof(sbyte)
-				|| columnType == typeof(ushort)
-				|| columnType == typeof(short)
-				|| columnType == typeof(uint)
-				|| columnType == typeof(int)
-				|| columnType == typeof(ulong)
-				|| columnType == typeof(long)
-				|| columnType == typeof(float)
-				|| columnType == typeof(double)
-				|| columnType == typeof(decimal))
+			if (value is byte @byte)       { writer.Write(@byte); return; }
+			if (value is sbyte @sbyte)     { writer.Write(@sbyte); return; }
+			if (value is ushort @ushort)   { writer.Write(@ushort); return; }
+			if (value is short @short)     { writer.Write(@short); return; }
+			if (value is uint @uint)       { writer.Write(@uint); return; }
+			if (value is int @int)         { writer.Write(@int); return; }
+			if (value is ulong @ulong)     { writer.Write(@ulong); return; }
+			if (value is long @long)       { writer.Write(@long); return; }
+			if (value is float @float)     { writer.Write(@float); return; }
+			if (value is double @double)   { writer.Write(@double); return; }
+			if (value is decimal @decimal) { writer.Write(@decimal); return; }
+
+			if (value is MySqlDecimal mySqlDecimal)
 			{
-				return value.ToString();
+				writer.Write(mySqlDecimal.ToString());
+				return;
 			}
 
-			if (columnType == typeof(bool))
-				return (bool)value ? "1" : "0";
-
-			if (columnType == typeof(DateTime))
+			if (value is DateTime dtValue)
 			{
-				var dtValue = (DateTime)value;
-				return dtValue.ToString("yyyy-MM-dd HH:mm:ss");
+				writer.Write("\"");
+				writer.Write(dtValue, "yyyy-MM-dd HH:mm:ss");
+				writer.Write("\"");
+				return;
 			}
 
-			if (columnType == typeof(byte[]))
+			if (value is bool @bool)
 			{
-				return Convert.ToBase64String((byte[])value);
+				writer.Write(@bool ? "1" : "0");
+				return;
 			}
 
-			throw new SqlTypeException($"Could not represent type: {column.DataTypeName} ({columnType?.FullName ?? "<NULL>"})");
+			if (value is byte[] data)
+			{
+				writer.WriteBase64(data);
+				return;
+			}
+
+			throw new SqlTypeException($"Could not represent type: {value.GetType()}");
 		}
 	}
 }

@@ -1,6 +1,5 @@
 using System;
 using System.Buffers;
-using System.Formats.Asn1;
 using System.IO.Pipelines;
 using System.Threading.Tasks;
 
@@ -76,7 +75,7 @@ public class PipeTextWriter : IDisposable
 		(byte)'C', (byte)'D', (byte)'E', (byte)'F'
 	};
 
-	public void WriteHex(byte[] data)
+	public void WriteHex(ReadOnlySpan<byte> data)
 	{
 		var span = Buffer.Span;
 
@@ -89,6 +88,32 @@ public class PipeTextWriter : IDisposable
 			span[CurrentWritten + 1] = (char)HexAlphabetSpan[data[i] & 0xF];
 
 			CurrentWritten += 2;
+		}
+	}
+
+	public void WriteBase64(ReadOnlySpan<byte> data)
+	{
+		int currentIndex = 0;
+
+		while (currentIndex < data.Length)
+		{
+			int remainingBuffer = Buffer.Length - CurrentWritten;
+
+			if (remainingBuffer <= 4)
+			{
+				Flush();
+				remainingBuffer = Buffer.Length - CurrentWritten;
+			}
+
+			int base64Space = 3 * (remainingBuffer / 4);
+
+			int conversionSize = Math.Min(base64Space, data.Length - currentIndex);
+
+			if (!Convert.TryToBase64Chars(data.Slice(currentIndex, conversionSize), Buffer.Span.Slice(CurrentWritten), out int charsWritten))
+				throw new Exception("Could not convert data to base 64");
+
+			currentIndex += conversionSize;
+			CurrentWritten += charsWritten;
 		}
 	}
 
