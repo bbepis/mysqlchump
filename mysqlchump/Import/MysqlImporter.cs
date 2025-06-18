@@ -103,8 +103,6 @@ public class MysqlImporter : BaseImporter
 	{
 		int count = 0;
 
-		queryBuilder.Clear();
-
 		string[] currentColumnList = columns.Select(x => x.name).ToArray();
 		string[] testColumnList = new string[128];
 
@@ -112,7 +110,13 @@ public class MysqlImporter : BaseImporter
 			? ImportOptions.SourceTables[0]
 			: tableName;
 
-		queryBuilder.Append($"INSERT{(ImportOptions.InsertIgnore ? " IGNORE" : "")} INTO `{tableName}` (`{string.Join("`,`", currentColumnList)}`) VALUES ");
+		void RestartQuery()
+		{
+			queryBuilder.Clear();
+			queryBuilder.Append($"INSERT{(ImportOptions.InsertIgnore ? " IGNORE" : "")} INTO `{tableName}` (`{string.Join("`,`", currentColumnList)}`) VALUES ");
+		}
+
+		RestartQuery();
 
 		bool needsComma = false;
 		bool canContinue = true;
@@ -163,8 +167,23 @@ public class MysqlImporter : BaseImporter
 							break;
 					}
 
-					if (testColumnCount != currentColumnList.Length || !testColumnList.AsSpan(0, testColumnCount).SequenceEqual(currentColumnList))
-						throw new NotImplementedException("Need to handle custom column specification");
+					if (testColumnCount != currentColumnList.Length ||
+					    !testColumnList.AsSpan(0, testColumnCount).SequenceEqual(currentColumnList))
+					{
+						if (count > 0)
+						{
+							// todo: need to read columns into class variable, return here with (count, true) and restart with column list
+
+							//Console.Error.WriteLine($"Count: {count}");
+							//Console.Error.WriteLine($"Current column list: {string.Join(", ", currentColumnList)}");
+							//Console.Error.WriteLine($"Found column list: {string.Join(", ", testColumnList.AsSpan(0, testColumnCount).ToArray())}");
+							throw new NotImplementedException("Non-standard mysqldump format detected. Currently not equipped to handle this");
+						}
+
+						currentColumnList = testColumnList.AsSpan(0, testColumnCount).ToArray();
+
+						RestartQuery();
+					}
 
 					token = SqlTokenizer.Read();
 				}
@@ -321,8 +340,13 @@ public class MysqlImporter : BaseImporter
 							break;
 					}
 
-					if (testColumnCount != currentColumnList.Length || !testColumnList.AsSpan(0, testColumnCount).SequenceEqual(currentColumnList))
-						throw new NotImplementedException("Need to handle custom column specification");
+					if (testColumnCount != currentColumnList.Length ||
+					    !testColumnList.AsSpan(0, testColumnCount).SequenceEqual(currentColumnList))
+					{
+						// we can't restart here because the CSV layout has already been defined before this method was executed.
+						// a solution would need to signal back new column headers
+						throw new NotImplementedException("Cannot restart insert mid-query with LoadDataInfile. Try importing without this flag");
+					}
 
 					token = SqlTokenizer.Read();
 				}
