@@ -208,8 +208,8 @@ public class SqlTokenizer
 				goto restart;
 		}
 
-		// String literal: starts with a single quote.
-		if (ch == '\'')
+		// String literal: starts with a single or (much less likely) double quote.
+		if (ch == '\'' || ch == '\"')
 		{
 			ReadStringLiteral();
 			return TokenType = SqlTokenType.String;
@@ -286,7 +286,7 @@ public class SqlTokenizer
 
 		if (ident.Length == 0)
 		{
-			var debug = _buffer.AsSpan(_position - 10);
+			var debug = _buffer.AsSpan(_position - 20);
 			throw new Exception("Found invalid identifier");
 		}
 
@@ -307,6 +307,8 @@ public class SqlTokenizer
 	// It also recognizes doubled-up quotes as an escaped single quote.
 	private void ReadStringLiteral()
 	{
+		char stringQuotationMark = _buffer[_position];
+
 		// Skip the starting single quote.
 		_position++;
 		int tokenStart = _position;
@@ -338,7 +340,7 @@ public class SqlTokenizer
 
 			char c = _buffer[_position];
 
-			if (c == '\'')
+			if (c == stringQuotationMark)
 			{
 				if (_position + 1 >= _bufferLength)
 				{
@@ -349,7 +351,7 @@ public class SqlTokenizer
 				}
 
 				// If the next character is also a quote then treat it as an escape.
-				if (Peek(1) == '\'')
+				if (Peek(1) == stringQuotationMark)
 				{
 					_position++;
 					if (!isStringBuilding)
@@ -373,7 +375,6 @@ public class SqlTokenizer
 
 				if (isStringBuilding)
 				{
-					isStringBuilding = true;
 					stringBuilder.Append(result);
 					result = stringBuilder.ToString().AsMemory();
 				}
@@ -382,7 +383,8 @@ public class SqlTokenizer
 				_position++;
 				return;
 			}
-			else if (c == '\\')
+			
+			if (c == '\\')
 			{
 				if (!isStringBuilding)
 				{
@@ -614,7 +616,7 @@ public class SqlTokenizer
 					isEscaped = true;
 				}
 			}
-			else if (isEscaped || char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '"' || c == '@')
+			else if (isEscaped || char.IsLetterOrDigit(c) || c == '_' || c == '.' || c == '@')
 			{
 				_position++;
 			}
