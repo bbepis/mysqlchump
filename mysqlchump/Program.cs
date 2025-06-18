@@ -56,13 +56,6 @@ class Program
 			var tables = (result.GetValueForOption(tablesOption)?.Split(',') ?? Array.Empty<string>()).Select(x => x.Trim())
 				.Union(result.GetValueForOption(tableOption) ?? Array.Empty<string>()).ToArray();
 
-			if (tables.Length == 0)
-			{
-				Console.WriteLine("No tables specified, exiting");
-				context.ExitCode = 1;
-				return;
-			}
-
 			string connectionString = result.GetValueForOption(connectionStringOption);
 
 			if (string.IsNullOrWhiteSpace(connectionString))
@@ -264,12 +257,12 @@ class Program
 				_ => throw new ArgumentOutOfRangeException(nameof(outputFormat), outputFormat, null)
 			};
 
-			if (tables.Length > 1 && !folderMode && !dumper.CanMultiplexTables)
-				throw new Exception("Selected dump format does not support multiple tables per file/stream");
-
 			await connection.OpenAsync();
 
 			await BaseDumper.InitializeConnection(connection);
+
+			if (tables.Length == 0)
+				tables = new[] { "*" };
 
 			if (tables.Any(x => x.Contains('*') || x.Contains('?')))
 			{
@@ -292,6 +285,9 @@ class Program
 
 				tables = newTables.ToArray();
 			}
+
+			if (tables.Length > 1 && !folderMode && !dumper.CanMultiplexTables)
+				throw new Exception("Selected dump format does not support multiple tables per file/stream");
 
 			tables = await SortTableNames(connection, tables);
 
