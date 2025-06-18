@@ -1,6 +1,9 @@
+using System.Dynamic;
+using System.Globalization;
 using System.IO.Compression;
 using System.IO.Pipelines;
 using System.Text;
+using CsvHelper.Configuration;
 using mysqlchump.Export;
 using mysqlchump.Import;
 using MySqlConnector;
@@ -113,11 +116,8 @@ ENGINE=InnoDB
 	public async Task GenerateCsvFile()
 	{
 		using var writer = new StreamWriter("generated.csv", false, Utility.NoBomUtf8);
-		using var csvWriter = CsvDataWriter.Create(writer, new char[128000], new CsvDataWriterOptions()
+		using var csvWriter = new CsvHelper.CsvWriter(writer, new CsvConfiguration(CultureInfo.InvariantCulture)
 		{
-			BinaryEncoding = BinaryEncoding.Base64,
-			WriteHeaders = true,
-			DateTimeFormat = "yyyy-MM-dd HH:mm:ss",
 			
 		});
 
@@ -127,10 +127,36 @@ ENGINE=InnoDB
 
 		using var reader = await command.ExecuteReaderAsync();
 
-		await csvWriter.WriteAsync(reader);
+		object? GetValueNull(int ordinal) => reader.IsDBNull(ordinal) ? null : reader.GetValue(ordinal);
+
+		bool isFirst = true;
+
+		while (await reader.ReadAsync())
+		{
+			dynamic record = new ExpandoObject();
+			record.id = GetValueNull(0);
+			record.textdata = GetValueNull(1) ?? "\\N";
+
+			var binarydata = GetValueNull(2);
+			record.binarydata = binarydata != null ? Convert.ToBase64String((byte[])binarydata) : "\\N";
+
+			record.date = ((DateTime?)GetValueNull(3))?.ToString("yyyy-MM-dd HH:mm:ss") ?? "\\N";
+
+			record.decimaldata = GetValueNull(4) ?? "\\N";
+
+			if (isFirst)
+			{
+				csvWriter.WriteDynamicHeader(record);
+				csvWriter.NextRecord();
+				isFirst = false;
+			}
+
+			csvWriter.WriteRecord(record);
+			csvWriter.NextRecord();
+		}
 	}
 
-	[Test]
+	[Test, Explicit]
 	public async Task CreateTestTable()
 	{
 		await using var connection = CreateConnection();
@@ -225,7 +251,7 @@ ENGINE=InnoDB
 	{
 		await using var connection = CreateConnection();
 
-		var command = new MySqlCommand(@"DROP TABLE IF EXISTS `data_secondary`;", connection);
+		await using var command = new MySqlCommand(@"DROP TABLE IF EXISTS `data_secondary`;", connection);
 
 		await command.ExecuteNonQueryAsync();
 
